@@ -465,7 +465,9 @@ struct ProbeTarget {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
         glGenVertexArrays(1, &vao);
     }
-    void draw(u8 out[4]) {
+    // indexed: the quad is vertices 100..103 of the bound vertex buffer,
+    // drawn with glDrawElements like the renderer's batches.
+    void draw(u8 out[4], bool indexed = false) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, 4, 4);
         glDisable(GL_SCISSOR_TEST);
@@ -477,7 +479,11 @@ struct ProbeTarget {
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (indexed) {
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, (const void*)(uintptr_t)(3 * 4));
+        } else {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
         glPixelStorei(GL_PACK_ALIGNMENT, 4);
         glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, out);
     }
@@ -503,12 +509,16 @@ GLuint buildProbe(const std::string& vs, const std::string& fs) {
 
 // Fetches a draw record, a matrix row and two states the way the generated
 // shaders do, from far enough into the data that the texture path wraps to
-// further texel rows, and compares them with what was uploaded.
+// further texel rows, and compares them with what was uploaded.  The quad is
+// drawn like a batch: indexed, its indices well above zero, the vertex buffer
+// bound at an offset, so a driver whose gl_VertexID is not the index (the
+// key to each vertex's draw record) fails here rather than in the game.
 bool Renderer::Impl::selfTestDataPath(bool textures) {
     const u32 kW = 2048, kOrdinal = 9001, kRecord = 200, kRow = 3000, kState = 2500, kMagic = 0x89ABCDEFu;
     std::vector<u32> vtxRec((size_t)kW * 4 * 2, 7u), recs((size_t)kW * 4 * 2, 0u);
     std::vector<float> rows((size_t)kW * 4 * 2, 0.0f), states((size_t)kW * 4 * 2, 0.0f);
-    for (u32 i = 0; i < 4; i++) vtxRec[kOrdinal + i] = kRecord;
+    const u32 kFirstIndex = 100;
+    for (u32 i = 0; i < 4; i++) vtxRec[kOrdinal + kFirstIndex + i] = kRecord;
     u32 rb = kRecord * kRecWords;
     recs[rb + kRecPosSlots + 1] = kRow;
     recs[rb + kRecPixel] = kState;
@@ -528,12 +538,28 @@ bool Renderer::Impl::selfTestDataPath(bool textures) {
         }
         return false;
     }
-    GLuint bufs[4] = {}, tex[4] = {};
+    GLuint bufs[4] = {}, tex[4] = {}, geom[2] = {};
     u8 px[4] = {};
     {
         ProbeTarget target;
         glUseProgram(prog);
         glUniform1ui(glGetUniformLocation(prog, "u_firstOrdinal"), kOrdinal);
+        // 16 unused floats, then 104 vertices of which the last four are the
+        // quad; three unused indices, then the quad's six.
+        std::vector<float> verts(16 + (kFirstIndex + 4) * 2, 0.0f);
+        const float quad[8] = {-1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f};
+        memcpy(&verts[16 + kFirstIndex * 2], quad, sizeof(quad));
+        const u32 idx[9] = {0, 0, 0, kFirstIndex, kFirstIndex + 1, kFirstIndex + 2, kFirstIndex, kFirstIndex + 2, kFirstIndex + 3};
+        glGenBuffers(2, geom);
+        glBindVertexArray(target.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, geom[0]);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts.size() * 4), verts.data(), GL_STREAM_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, geom[1]);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribFormat(0, 2, GL_FLOAT, GL_FALSE, 0);
+        glVertexAttribBinding(0, 0);
+        glBindVertexBuffer(0, geom[0], 16 * 4, 8);
         if (!textures) {
             const void* data[4] = {rows.data(), recs.data(), states.data(), vtxRec.data()};
             glGenBuffers(4, bufs);
@@ -560,7 +586,10 @@ bool Renderer::Impl::selfTestDataPath(bool textures) {
             }
             glActiveTexture(GL_TEXTURE0);
         }
-        target.draw(px);
+        target.draw(px, true);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteBuffers(2, geom);
         if (!textures) {
             for (GLuint i = 0; i < 4; i++) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
             glDeleteBuffers(4, bufs);
@@ -578,8 +607,8 @@ bool Renderer::Impl::selfTestDataPath(bool textures) {
     while (glGetError() != GL_NO_ERROR) {
     }
     bool ok = px[0] == 255 && px[1] == 255 && err == GL_NO_ERROR;
-    port_log("gl: self-test (%s): vertex stage %s, fragment stage %s, GL error 0x%x", name, px[0] == 255 ? "ok" : "WRONG", px[1] == 255 ? "ok" : "WRONG",
-             err);
+    port_log("gl: self-test (%s): vertex stage %s, fragment stage %s, GL error 0x%x (pixel %u %u %u %u)", name, px[0] == 255 ? "ok" : "WRONG",
+             px[1] == 255 ? "ok" : "WRONG", err, px[0], px[1], px[2], px[3]);
     return ok;
 }
 
@@ -1792,20 +1821,18 @@ void Renderer::Impl::upload(Prepared& p, bool syncPrograms) {
         fb.fence = nullptr;
     }
     glBindVertexArray(0);  // the element buffer binding belongs to the bound VAO
+    // One glBufferData per buffer: new storage and its contents in a single
+    // call, so the driver never waits on (or copies) storage the GPU still
+    // reads, and never sees a separate glBufferSubData (slow on Mali).
     auto put = [&fb](int i, GLenum target, const void* data, size_t bytes) {
+        static const u32 zero[4] = {};
         glBindBuffer(target, fb.buf[i]);
-        if (bytes > fb.cap[i]) {
-            fb.cap[i] = bytes + bytes / 4 + 4096;
+        if (!bytes || !data) {
+            data = zero;
+            bytes = sizeof(zero);
         }
-        if (fb.cap[i] == 0) {
-            fb.cap[i] = 4096;
-        }
-        // Always orphan the buffer before writing so the driver allocates a fresh
-        // memory block if the GPU is still referencing previous storage.
-        glBufferData(target, (GLsizeiptr)fb.cap[i], nullptr, GL_STREAM_DRAW);
-        if (bytes && data) {
-            glBufferSubData(target, 0, (GLsizeiptr)bytes, data);
-        }
+        glBufferData(target, (GLsizeiptr)bytes, data, GL_STREAM_DRAW);
+        fb.cap[i] = bytes;
     };
     put(0, GL_ARRAY_BUFFER, f.verts.data(), f.verts.size() * 4);
     put(2, GL_ELEMENT_ARRAY_BUFFER, p.indices.data(), p.indices.size() * 4);

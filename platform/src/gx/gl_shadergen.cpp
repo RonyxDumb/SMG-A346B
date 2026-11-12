@@ -51,6 +51,7 @@ std::string dataAccessDecls(bool fragment, bool useTextures) {
             s += "layout(std430, binding = 1) readonly buffer RecBuf { uint recs[]; };\n";
             s += "layout(std430, binding = 3) readonly buffer VtxRecBuf { uint vtxRec[]; };\n";
             s += "#define FETCH_ROW(i) rows[i]\n#define FETCH_REC(i) recs[i]\n#define FETCH_VTXREC(i) vtxRec[i]\n";
+            s += "#define FETCH_REC4(i) uvec4(recs[i], recs[(i) + 1u], recs[(i) + 2u], recs[(i) + 3u])\n";
         }
         s += "layout(std430, binding = 2) readonly buffer StateBuf { vec4 st[]; };\n";
         s += "#define FETCH_ST(i) st[i]\n";
@@ -67,6 +68,8 @@ std::string dataAccessDecls(bool fragment, bool useTextures) {
             s += "uint pickWord(uvec4 v, uint k) { return k == 0u ? v.x : k == 1u ? v.y : k == 2u ? v.z : v.w; }\n";
             s += "#define FETCH_REC(i) pickWord(texelFetch(s_recTex, ivec2(int(((i) >> 2u) & 2047u), int((i) >> 13u)), 0), (i) & 3u)\n";
             s += "#define FETCH_VTXREC(i) pickWord(texelFetch(s_vtxRecTex, ivec2(int(((i) >> 2u) & 2047u), int((i) >> 13u)), 0), (i) & 3u)\n";
+            // Four consecutive words from a multiple of four: one texel.
+            s += "#define FETCH_REC4(i) texelFetch(s_recTex, ivec2(int(((i) >> 2u) & 2047u), int((i) >> 13u)), 0)\n";
         }
         s += "layout(binding = 10) uniform highp sampler2D s_stateTex;\n";
         s += "#define FETCH_ST(i) texelFetch(s_stateTex, ivec2(int((i) & 2047u), int((i) >> 11u)), 0)\n";
@@ -86,6 +89,7 @@ std::string genProbeQuadVs() {
 std::string genProbeDataVs(bool useTextures) {
     char body[1024];
     snprintf(body, sizeof(body),
+             "layout(location = 0) in vec2 a_pos;\n"
              "uniform highp uint u_firstOrdinal;\nflat out highp uint v_pix;\nflat out highp uint v_ok;\nvoid main() {\n"
              "  uint rb = FETCH_VTXREC(u_firstOrdinal + uint(gl_VertexID)) * %uu;\n"
              "  uint row = FETCH_REC(rb + %uu);\n  v_pix = FETCH_REC(rb + %uu);\n"
@@ -93,8 +97,7 @@ std::string genProbeDataVs(bool useTextures) {
              "  ok = ok && FETCH_ROW(row) == vec4(1.5, -2.25, 3.0e6, 0.125);\n"
              "  ok = ok && FETCH_ST(v_pix + 1u) == vec4(-7.5, 0.5, 2.0, 1.0);\n"
              "  v_ok = ok ? 1u : 0u;\n"
-             "  vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
-             "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n}\n",
+             "  gl_Position = vec4(a_pos, 0.0, 1.0);\n}\n",
              (unsigned)kRecWords, (unsigned)(kRecPosSlots + 1), (unsigned)kRecPixel, (unsigned)kRecFlags);
     return "#version 320 es\nprecision highp float;\nprecision highp int;\n" + dataAccessDecls(false, useTextures) + body;
 }
@@ -189,7 +192,7 @@ std::string genVertexShader(const ShaderUid& u, bool useVertexTextures) {
     o.w("flat out highp uint v_pix;\n");
     o.w("out vec4 v_clr0;\nout vec4 v_clr1;\n");
     for (uint32_t i = 0; i < u.numTexGens; i++) o.w("out vec3 v_tex%u;\n", i);
-    o.w("out float v_viewz;\nout float v_gxz;\n");
+    o.w("out float v_gxz;\n");
     if (u.cutaway) o.w("out vec3 v_eye;\n");
 
     // Matrix rows: slot bases come from the draw record (3 rows per slot).
@@ -209,13 +212,18 @@ std::string genVertexShader(const ShaderUid& u, bool useVertexTextures) {
     o.w("float safeDiv(float n, float d) { return (abs(d) > 1.0e-30) ? n / d : 0.0; }\n");
     o.w("void main() {\n");
     o.w("  uint rb = FETCH_VTXREC(u_firstOrdinal + uint(gl_VertexID)) * %uu;\n", (unsigned)kRecWords);
-    o.w("  uint lbase = FETCH_REC(rb + %uu);\n  uint pjbase = FETCH_REC(rb + %uu);\n", (unsigned)kRecLights, (unsigned)kRecProj);
-    o.w("  v_pix = FETCH_REC(rb + %uu);\n", (unsigned)kRecPixel);
-    o.w("  uint mA = FETCH_REC(rb + %uu);\n  uint mB = FETCH_REC(rb + %uu);\n", (unsigned)kRecMtxIdxA, (unsigned)kRecMtxIdxB);
-    o.w("  uint rflags = FETCH_REC(rb + %uu);\n", (unsigned)kRecFlags);
+    // The record's state bases, matrix indices and flags sit in two groups
+    // of four words (two texels on the texture path).
+    static_assert(kRecWords % 4 == 0 && kRecLights == 41 && kRecProj == 42 && kRecPixel == 43, "record layout");
+    static_assert(kRecMtxIdxA == 44 && kRecMtxIdxB == 45 && kRecFlags == 46, "record layout");
+    o.w("  uvec4 recA = FETCH_REC4(rb + 40u);\n  uvec4 recB = FETCH_REC4(rb + 44u);\n");
+    o.w("  uint lbase = recA.y;\n  uint pjbase = recA.z;\n  v_pix = recA.w;\n");
+    o.w("  uint mA = recB.x;\n  uint mB = recB.y;\n  uint rflags = recB.z;\n");
     o.w("  vec4 proj[4] = vec4[4](FETCH_ST(pjbase), FETCH_ST(pjbase + 1u), FETCH_ST(pjbase + 2u), FETCH_ST(pjbase + 3u));\n");
     o.w("  vec4 depthParams = FETCH_ST(pjbase + 4u);\n");
-    o.w("  vec4 matColor[2] = vec4[2](L(40), L(41));\n  vec4 ambColor[2] = vec4[2](L(42), L(43));\n");
+    if (u.numChans) {
+        o.w("  vec4 matColor[2] = vec4[2](L(40), L(41));\n  vec4 ambColor[2] = vec4[2](L(42), L(43));\n");
+    }
     if (f & VF_POSMTX) {
         o.w("  int pidx = int(a_posmtx);\n");
     } else {
@@ -280,7 +288,6 @@ std::string genVertexShader(const ShaderUid& u, bool useVertexTextures) {
     if (u.cutaway) o.w("    v_eye = vec3(0.0, 0.0, 1.0e6);  // never cut\n");
     o.w("  }\n");
     o.w("  gl_Position = clipPos;\n");
-    o.w("  v_viewz = pos.z;\n");
 
     // Color channels.
     o.w("  vec4 vclr0 = %s;\n", (f & VF_CLR0) ? "a_clr0" : "vec4(1.0)");
@@ -543,7 +550,7 @@ std::string genFragmentShader(const ShaderUid& u, bool useVertexTextures) {
     o.w("flat in highp uint v_pix;\n");
     o.w("in vec4 v_clr0;\nin vec4 v_clr1;\n");
     for (uint32_t i = 0; i < u.numTexGens; i++) o.w("in vec3 v_tex%u;\n", i);
-    o.w("in float v_viewz;\nin float v_gxz;\nout vec4 o_color;\n");
+    o.w("in float v_gxz;\nout vec4 o_color;\n");
     o.w("vec2 projUv(vec3 t) { return (t.z != 0.0) ? t.xy / t.z : t.xy; }\n");
     o.w("int idot(ivec3 a, ivec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }\n");
     // The low 8 bits of each component, one scalar at a time: Mali's
@@ -573,11 +580,38 @@ std::string genFragmentShader(const ShaderUid& u, bool useVertexTextures) {
     o.w("    if (cut > (kBayer[q.y * 4 + q.x] + 0.5) / 16.0) discard;\n");
     o.w("  }\n");
     }
-    // Pixel state of the draw (struct PixelState), only the parts in use.
-    o.w("  ivec4 prev = ivec4(floor(ST(v_pix) * 255.0 + 0.5));\n  ivec4 c0 = ivec4(floor(ST(v_pix + 1u) * 255.0 + 0.5));\n");
-    o.w("  ivec4 c1 = ivec4(floor(ST(v_pix + 2u) * 255.0 + 0.5));\n  ivec4 c2 = ivec4(floor(ST(v_pix + 3u) * 255.0 + 0.5));\n");
+    // Pixel state of the draw (struct PixelState), only the parts in use:
+    // each is a fetch per pixel.  A TEV register is loaded when a stage
+    // reads it or it is the output; a konst color when a stage selects it.
+    uint32_t regsRead = 0, konstRead = 0;
+    for (uint32_t s = 0; s < u.numTevStages; s++) {
+        uint32_t cc = u.tevColor[s], ac = u.tevAlpha[s];
+        uint32_t ksel = u.ksel[s / 2] >> ((s & 1) * 10);
+        uint32_t kcsel = (ksel >> 4) & 31, kasel = (ksel >> 9) & 31;
+        for (int k = 0; k < 4; k++) {
+            uint32_t csel = (cc >> (k * 4)) & 15, asel = (ac >> (4 + k * 3)) & 7;
+            if (csel < 8) regsRead |= 1u << (csel >> 1);
+            if (asel < 4) regsRead |= 1u << asel;
+            if (csel == 14 && kcsel >= 12) konstRead |= 1u << ((kcsel - (kcsel >= 16 ? 16 : 12)) & 3);
+            if (asel == 6 && kasel >= 16) konstRead |= 1u << ((kasel - 16) & 3);
+        }
+        if (s == u.numTevStages - 1) regsRead |= (1u << ((cc >> 22) & 3)) | (1u << ((ac >> 22) & 3));
+    }
+    for (int i = 0; i < 4; i++) {
+        if ((regsRead >> i) & 1) {
+            o.w("  ivec4 %s = ivec4(floor(ST(v_pix + %du) * 255.0 + 0.5));\n", kDest[i], i);
+        } else {
+            o.w("  ivec4 %s = ivec4(0);\n", kDest[i]);
+        }
+    }
     o.w("  ivec4 konst[4];\n");
-    for (int i = 0; i < 4; i++) o.w("  konst[%d] = to8(ST(v_pix + %du));\n", i, 4 + i);
+    for (int i = 0; i < 4; i++) {
+        if ((konstRead >> i) & 1) {
+            o.w("  konst[%d] = to8(ST(v_pix + %du));\n", i, 4 + i);
+        } else {
+            o.w("  konst[%d] = ivec4(0);\n", i);
+        }
+    }
     o.w("  vec4 alphaRef = ST(v_pix + 8u);\n");
     if (((u.fogSel >> 1) & 7) >= 2) {
         o.w("  vec4 fogColor = ST(v_pix + 9u);\n  vec4 fogParams = ST(v_pix + 10u);\n");
