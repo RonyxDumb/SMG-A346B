@@ -288,6 +288,9 @@ std::string genVertexShader(const ShaderUid& u, bool useVertexTextures) {
     if (u.cutaway) o.w("    v_eye = vec3(0.0, 0.0, 1.0e6);  // never cut\n");
     o.w("  }\n");
     o.w("  gl_Position = clipPos;\n");
+    // Undefined unless written (GX points are rare; Mali draws nothing or
+    // garbage sizes without it).
+    o.w("  gl_PointSize = 1.0;\n");
 
     // Color channels.
     o.w("  vec4 vclr0 = %s;\n", (f & VF_CLR0) ? "a_clr0" : "vec4(1.0)");
