@@ -220,10 +220,19 @@ bool initEgl(MobileApp& a) {
         EGL_NONE
     };
 
+    // Preferably a config that also takes pbuffers: the renderer's
+    // background shader compiler makes its context current on one.
+    EGLint cfgAttrPbuffer[sizeof(cfgAttr) / sizeof(cfgAttr[0])];
+    memcpy(cfgAttrPbuffer, cfgAttr, sizeof(cfgAttr));
+    cfgAttrPbuffer[3] = EGL_WINDOW_BIT | EGL_PBUFFER_BIT;
+
     EGLint count = 0;
-    if (!eglChooseConfig(a.display, cfgAttr, &a.config, 1, &count) || count == 0) {
-        LOGE("eglChooseConfig failed");
-        return false;
+    if (!eglChooseConfig(a.display, cfgAttrPbuffer, &a.config, 1, &count) || count == 0) {
+        count = 0;
+        if (!eglChooseConfig(a.display, cfgAttr, &a.config, 1, &count) || count == 0) {
+            LOGE("eglChooseConfig failed");
+            return false;
+        }
     }
 
     const EGLint ctxAttr[] = {
@@ -258,6 +267,21 @@ int getDesiredTargetHeight(const MobileApp& a) {
 }
 
 void updateViewport(MobileApp& a);
+
+// Ends a frame.  The game's picture carries the EFB's alpha (0 over most of
+// a 3D scene), the blit copies it into the window, and what a compositor
+// does with a window whose alpha is not 1 differs between devices (black or
+// flickering 3D behind an intact HUD on some Mali phones): the window's
+// alpha is forced to 1 before every swap.
+static void swapWindow(MobileApp& a) {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    eglSwapBuffers(a.display, a.surface);
+}
 
 static void presentGameImage(MobileApp& a) {
     updateViewport(a);
@@ -713,6 +737,25 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
     }
     gpu::setShaderCachePath((std::string(app->activity->internalDataPath) + "/shaders.bin").c_str());
 
+    // Renderer diagnostics without a rebuild: NAME=VALUE lines of
+    // <external files>/gpu_options.txt become environment variables (the
+    // PETARI_* switches of the renderer, e.g. PETARI_VTF=0, PETARI_GLVIS=tex).
+    if (FILE* opt = fopen((ext + "/gpu_options.txt").c_str(), "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), opt)) {
+            char* eq = strchr(line, '=');
+            if (!eq || line[0] == '#') continue;
+            *eq = 0;
+            char* val = eq + 1;
+            val[strcspn(val, "\r\n")] = 0;
+            if (strncmp(line, "PETARI_", 7) == 0) {
+                setenv(line, val, 1);
+                port_log("gpu_options: %s=%s", line, val);
+            }
+        }
+        fclose(opt);
+    }
+
     // Search for game data files
     a.dataRoot = findGameData(ext);
     if (a.dataRoot.empty()) {
@@ -884,7 +927,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
             glViewport(0, 0, a.screenWidth, a.screenHeight);
             mobile_ui::get().render(a.screenWidth, a.screenHeight);
 
-            eglSwapBuffers(a.display, a.surface);
+            swapWindow(a);
         } else {
             if (!r.hasFrame() || (mobile_ui::get().isSettingsOpen() && mobile_ui::get().needsRedraw())) {
                 if (mobile_ui::get().needsRedraw()) {
@@ -904,7 +947,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
                     }
                     glViewport(0, 0, a.screenWidth, a.screenHeight);
                     mobile_ui::get().render(a.screenWidth, a.screenHeight);
-                    eglSwapBuffers(a.display, a.surface);
+                    swapWindow(a);
                 } else {
                     // Idle screen while waiting for the game to boot or submit frames
                     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -912,7 +955,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
                     glClearColor(0.04f, 0.05f, 0.10f, 1.0f);  // Galaxy deep blue
                     glClear(GL_COLOR_BUFFER_BIT);
                     mobile_ui::get().render(a.screenWidth, a.screenHeight);
-                    eglSwapBuffers(a.display, a.surface);
+                    swapWindow(a);
                     usleep(16000);
                 }
             } else {

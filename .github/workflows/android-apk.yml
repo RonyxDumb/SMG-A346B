@@ -1,0 +1,84 @@
+name: Build Android APKs
+
+# Builds GalaxyMobile.apk / GalaxyMobilePlus.apk on every push, so each step
+# of the work is testable on a phone: download them from the run's
+# "Artifacts" (or from the rolling pre-release of the branch).
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'art/**'
+      - 'out-mobile/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --install "build-tools;35.0.0" "platforms;android-34" > /dev/null
+          # NDK r29 (the one the project is developed with).
+          if yes | "$SDKMANAGER" --install "ndk;29.0.14206865" > /dev/null 2>&1; then
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          else
+            curl -sSfL -o "$RUNNER_TEMP/ndk.zip" https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+            unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+            echo "ANDROID_NDK_HOME=$RUNNER_TEMP/android-ndk-r29" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check the shader generator
+        run: tools/ci/shadergen_check.sh
+
+      - name: Build and package the APKs
+        run: tools/ci/build_apks.sh
+
+      - name: Name the build
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "branch=$(echo "${GITHUB_REF_NAME}" | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GalaxyMobile-${{ steps.meta.outputs.branch }}-${{ steps.meta.outputs.sha }}
+          path: |
+            out-mobile/GalaxyMobile.apk
+            out-mobile/GalaxyMobilePlus.apk
+          if-no-files-found: error
+          compression-level: 0
+
+      # A pre-release that always holds the branch's newest build: a direct
+      # download link that needs no GitHub login on the phone.
+      - name: Update the rolling pre-release
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ steps.meta.outputs.branch }}
+        run: |
+          NOTES="Automatic build of branch ${GITHUB_REF_NAME} at commit ${GITHUB_SHA}.
+          Signed with the CI debug key, not the original author's: Android refuses to install it over a GalaxyMobile from another source. Uninstalling that one deletes its save files (they live in the app's private storage); the game data in /sdcard stays."
+          gh release delete "$TAG" --yes --cleanup-tag 2> /dev/null || true
+          gh release create "$TAG" --prerelease --target "$GITHUB_SHA" --title "Latest build: ${GITHUB_REF_NAME} (${{ steps.meta.outputs.sha }})" --notes "$NOTES" \
+            out-mobile/GalaxyMobile.apk out-mobile/GalaxyMobilePlus.apk

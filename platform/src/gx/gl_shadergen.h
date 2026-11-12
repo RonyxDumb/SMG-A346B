@@ -59,6 +59,19 @@ ShaderUid makeShaderUid(const uint32_t* bp, const uint32_t* xfRegs, uint32_t vtx
 std::string genVertexShader(const ShaderUid& uid, bool useVertexTextures = false);
 std::string genFragmentShader(const ShaderUid& uid, bool useVertexTextures = false);
 
+// GLSL declarations of the frame data and the FETCH_ROW / FETCH_REC /
+// FETCH_ST / FETCH_VTXREC / ST accessors, for a vertex or a fragment shader:
+// storage buffers, or (useTextures) data textures on units 8-11.
+std::string dataAccessDecls(bool fragment, bool useTextures);
+
+// Shaders of the start-up driver self-tests: a data fetch through either
+// path (red: the vertex stage read what was uploaded, green: the fragment
+// stage did) and the TEV's integer forms (see Renderer::Impl::selfTest*).
+std::string genProbeQuadVs();
+std::string genProbeDataVs(bool useTextures);
+std::string genProbeDataFs(bool useTextures);
+std::string genProbeIntFs();
+
 // Per-frame shader data (see gl_renderer.cpp).  Draws are batched, so
 // everything that varies per draw lives in storage buffers:
 //   rows[]  (binding 0)  matrix rows (vec4) snapshotted from XF memory
