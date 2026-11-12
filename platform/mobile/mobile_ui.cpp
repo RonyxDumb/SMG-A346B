@@ -131,8 +131,11 @@ int base64Val(char c) {
     return -1;
 }
 
+// highp throughout: the positions are window pixels (up to 2400 and more
+// across a phone), and Mali computes mediump in 16-bit floats, whose whole
+// numbers end at 2048: quads snapped to 1-2 pixel steps and shimmered.
 const char* kVS = R"(#version 300 es
-precision mediump float;
+precision highp float;
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUv;
 layout(location = 2) in vec4 aColor;
@@ -153,13 +156,13 @@ void main() {
 )";
 
 const char* kFS = R"(#version 300 es
-precision mediump float;
+precision highp float;
 
 in vec2 vUv;
 in vec4 vColor;
 in vec4 vParams;
 
-uniform sampler2D uFontTex;
+uniform highp sampler2D uFontTex;
 
 out vec4 FragColor;
 

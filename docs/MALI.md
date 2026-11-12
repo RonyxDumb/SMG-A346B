@@ -18,6 +18,7 @@ start-up self-test reports what the actual driver does.
 | A NaN / inf out of the lighting maths saturates to white | "bleached" characters when a light's unused fields held garbage | overflow-safe normalisation and guarded divisions; a non-finite attenuation contributes nothing |
 | What a compositor does with a window whose alpha is not 1 is device specific | black or flickering 3D behind an intact HUD (the EFB's alpha is 0 over most of a scene) | the window's alpha is forced to 1 before every swap |
 | `glBufferSubData` after orphaning is slow | frame time | one `glBufferData` per buffer and frame |
+| `mediump` is a 16-bit float, also for positions | the touch overlay and settings UI (pixel coordinates beyond 2048 on a 2340 px wide screen) snapped to 1-2 px steps and shimmered | the overlay's shaders are `highp` |
 
 Per-pixel cost matters on a mid-range Mali: a fragment shader now fetches
 only the pixel state it uses (typically 1-3 texels instead of 27).
