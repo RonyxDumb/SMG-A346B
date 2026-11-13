@@ -6,6 +6,7 @@
 #include "Game/Util/MtxUtil.hpp"
 #include "Game/Util/SchedulerUtil.hpp"
 #include "Game/Util/ScreenUtil.hpp"
+#include "Game/Util/SystemUtil.hpp"
 #include <JSystem/J3DGraphAnimator/J3DMtxBuffer.hpp>
 #include <JSystem/J3DGraphBase/J3DMaterial.hpp>
 #include <JSystem/J3DGraphBase/J3DShapeDraw.hpp>
@@ -361,7 +362,13 @@ J3DModelX::J3DModelX(J3DModelData* data, u32 flags, u32 bufferFlags) : J3DModel(
     storeDisplayList(&obj, 5);
 
     GDSetTexLookupMode(GX_TEXMAP0, GX_REPEAT, GX_REPEAT, GX_LINEAR, GX_LINEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_FALSE, GX_ANISO_1);
+#ifdef TARGET_PC
+    // A texture's size, not a place on the screen: the game's own widths
+    // (a wider display's would not fit a GX texture's 1024).
+    GDSetTexImgAttr(GX_TEXMAP0, MR::isScreen16Per9() ? 832 : 608, JUTVideo::getManager()->getEfbHeight(), GX_TF_RGB565);
+#else
     GDSetTexImgAttr(GX_TEXMAP0, MR::getScreenWidth(), JUTVideo::getManager()->getEfbHeight(), GX_TF_RGB565);
+#endif
     GDSetTexImgPtr(GX_TEXMAP0, const_cast< u8* >(reinterpret_cast< const u8* >(MR::getScreenResTIMG())) + MR::getScreenResTIMG()->mImageDataOffset);
     GDSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_NRM, GX_TRUE, GX_IDENTITY);
     storeDisplayList(&obj, 6);

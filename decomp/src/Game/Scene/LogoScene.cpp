@@ -1,4 +1,5 @@
 #include "Game/Scene/LogoScene.hpp"
+#include "Game/Util/ScreenUtil.hpp"
 #include "Game/LiveActor/Nerve.hpp"
 #include "Game/Scene/SceneFunction.hpp"
 #include "Game/Scene/SceneObjHolder.hpp"
@@ -223,7 +224,11 @@ void LogoScene::initLayout() {
     mIsbnManager->setNumber(pIsbnNumber, pRegistNumber, pOtherNumber);
 
     if (MR::isScreen16Per9()) {
+#ifdef TARGET_PC
+        mIsbnManager->setAdjustRate(MR::getLayoutAdjustScaleX(), 1.0f);
+#else
         mIsbnManager->setAdjustRate(0.75f, 1.0f);
+#endif
     }
 }
 

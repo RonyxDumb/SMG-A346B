@@ -109,8 +109,37 @@ namespace MR {
     }
 
     s32 getScreenWidth() {
+#ifdef TARGET_PC
+        // A display of another shape, shown in full (a phone's): the 2D
+        // screen is as wide as the display, in the units of the game's own
+        // 16:9 screen (832 across 16:9).  Everything that goes by this width
+        // follows: layouts spread over it (their location adjust keeps the
+        // panes' shapes, see getLayoutAdjustScaleX), fills and wipes cover
+        // it, 2D positions of 3D points match the wider camera, and the
+        // pointer reaches all of it.
+        if (port_is_fullscreen_aspect()) {
+            f32 aspect = port_get_display_aspect();
+            if (aspect > 1.0f) {
+                s32 width = static_cast< s32 >(832.0f * aspect / (16.0f / 9.0f) + 0.5f);
+                return width < 608 ? 608 : width;
+            }
+        }
+#endif
         return isScreen16Per9() ? 832 : 608;
     }
+
+#ifdef TARGET_PC
+    // The horizontal scale that keeps a layout pane's shape when the 608
+    // wide layout is stretched over the screen: the game's 0.75 on its 16:9
+    // screen, less on a wider one.
+    f32 getLayoutAdjustScaleX() {
+        s32 width = getScreenWidth();
+        if (width <= 608) {
+            return 1.0f;
+        }
+        return 0.75f * 832.0f / width;
+    }
+#endif
 
     s32 getSafetyFrameWidth() {
         s32 viWidthMax = static_cast< u16 >(RenderModeObj::getViWidthMax());

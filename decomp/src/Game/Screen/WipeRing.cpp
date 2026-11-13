@@ -1,6 +1,7 @@
 #include "Game/Screen/WipeRing.hpp"
 #include "Game/LiveActor/Nerve.hpp"
 #include "Game/Util/CameraUtil.hpp"
+#include "Game/Util/DrawUtil.hpp"
 #include "Game/Util/LayoutUtil.hpp"
 #include "Game/Util/MathUtil.hpp"
 #include "Game/Util/PlayerUtil.hpp"
@@ -58,6 +59,12 @@ void WipeRing::draw() const {
         return;
     }
     LayoutActor::draw();
+    // Fully closed on a screen wider than the game's 16:9: the ring's black
+    // surround was sized for that one, so make sure nothing shows beside it.
+    if (closed >= 1.0f && MR::getScreenWidth() > 832) {
+        GXColor black = {0, 0, 0, 255};
+        MR::fillScreen(black);
+    }
 }
 #endif
 

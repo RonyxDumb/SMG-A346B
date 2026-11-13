@@ -85,6 +85,21 @@ void MoviePlayerSimple::draw() const {
             frameBufferWidth = 832;
         }
 
+#ifdef TARGET_PC
+        // A screen wider than 16:9: the movie keeps its shape, between
+        // black bars.
+        if (MR::getScreenWidth() > 832) {
+            frameBufferWidth = (MR::getFrameBufferWidth() * 832 / MR::getScreenWidth()) & ~1u;
+            s16 side = (MR::getFrameBufferWidth() - frameBufferWidth) / 2;
+            s16 fbWidth = MR::getFrameBufferWidth();
+            s16 fbHeight = MR::getFrameBufferHeight();
+            MR::fillScreenSetup(::sCinemaFrameColor);
+            TBox2s left(0, 0, side, fbHeight);
+            MR::fillScreenArea(left.i, left.f);
+            TBox2s right(fbWidth - side, 0, fbWidth, fbHeight);
+            MR::fillScreenArea(right.i, right.f);
+        }
+#endif
         u32 ySize = mMovie->mVideoInfo.ySize;
         u32 v4 = (MR::getFrameBufferWidth() - frameBufferWidth) / 2;
         u32 v5 = (MR::getFrameBufferHeight() - ySize) / 2;

@@ -722,9 +722,11 @@ void updateRightStickPointer(MobileApp& a, int64_t nowNs) {
     float dirX = rx / mag;
     float dirY = ry / mag;
 
-    // Normalized [-1, 1] pointer space is 16:9, so scale vertical speed for uniform visual motion.
-    constexpr float kSpeedX = 2.50f;
-    constexpr float kSpeedY = 2.50f * (16.0f / 9.0f);
+    // Normalized [-1, 1] pointer space covers the game's picture (16:9, or
+    // the display's shape in fullscreen): scale the speeds for uniform
+    // visual motion, the same on any display.
+    const float kSpeedY = 2.50f * (16.0f / 9.0f);
+    const float kSpeedX = kSpeedY / std::max(1.0f, port_get_display_aspect());
     a.touchPad.pointerX = std::max(-1.0f, std::min(1.0f, a.touchPad.pointerX + dirX * curved * kSpeedX * dt));
     a.touchPad.pointerY = std::max(-1.0f, std::min(1.0f, a.touchPad.pointerY + dirY * curved * kSpeedY * dt));
     a.touchPad.pointerValid = 1;
@@ -863,15 +865,13 @@ int32_t onInput(android_app* app, AInputEvent* event) {
             return 1;
         }
 
+        // The Star Pointer covers the game's picture: all of the display in
+        // fullscreen (the game's 2D screen is as wide as it, see
+        // MR::getScreenWidth), the 16:9 picture otherwise.
         updateViewport(*a);
-        int ptrX = a->vpX, ptrY = a->vpY, ptrW = a->vpW, ptrH = a->vpH;
-        if (mobile_ui::get().settings().fullscreen) {
-            ptrW = (int)lroundf((float)a->screenHeight * (16.0f / 9.0f));
-            ptrX = (a->screenWidth - ptrW) / 2;
-        }
         if (mobile_ui::get().handleInput(event, a->touchPad,
                                          a->screenWidth, a->screenHeight,
-                                         ptrX, ptrY, ptrW, ptrH)) {
+                                         a->vpX, a->vpY, a->vpW, a->vpH)) {
             syncMergedPad(*a);
             port_input_set(0, &a->pad);
             return 1;

@@ -1,4 +1,5 @@
 #include "Game/Util/LayoutUtil.hpp"
+#include "Game/Util/ScreenUtil.hpp"
 #include "Game/Effect/MultiEmitter.hpp"
 #include "Game/Screen/CustomTagProcessor.hpp"
 #include "Game/Screen/IconAButton.hpp"
@@ -623,7 +624,11 @@ namespace MR {
         *pDrawInfo = pActor->getLayoutManager()->mDrawInfo;
         if (aspect) {
             pDrawInfo->mFlag.locationAdjust = true;
+#ifdef TARGET_PC
+            pDrawInfo->mLocationAdjustScale = nw4r::math::VEC2(MR::getLayoutAdjustScaleX(), 1.0f);
+#else
             pDrawInfo->mLocationAdjustScale = nw4r::math::VEC2(0.75f, 1.0f);
+#endif
         } else {
             pDrawInfo->mFlag.locationAdjust = false;
             pDrawInfo->mLocationAdjustScale = nw4r::math::VEC2(1.0f, 1.0f);

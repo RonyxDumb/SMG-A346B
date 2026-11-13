@@ -190,6 +190,15 @@ void LayoutManager::movement() {
 }
 
 void LayoutManager::calcAnim() {
+#ifdef TARGET_PC
+    // Any screen width (MR::getScreenWidth), not only the game's two.
+    if (true) {
+        nw4r::math::VEC2 scale;
+        scale.x = MR::getLayoutAdjustScaleX();
+        scale.y = 1.0f;
+        mDrawInfo.SetLocationAdjustScale(scale);
+    } else
+#endif
     if (MR::isScreen16Per9()) {
         nw4r::math::VEC2 scale;
         scale.x = 0.75f;
