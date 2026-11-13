@@ -330,7 +330,7 @@ void Settings::load(const std::string& path) {
             else if (!strcmp(key, "mod_advanced_haptics")) modAdvancedHaptics = (val > 0.5f);
             else if (!strcmp(key, "mod_flight_everywhere")) modFlightEverywhere = (val > 0.5f);
             else if (!strcmp(key, "show_camera_cutout")) showCameraCutout = (val > 0.5f);
-            else if (!strcmp(key, "language_index")) languageIndex = std::max(0, std::min(6, (int)(val + 0.5f)));
+            else if (!strcmp(key, "language_index")) languageIndex = std::max(0, std::min(PORT_GAME_LANGUAGE_COUNT - 1, (int)(val + 0.5f)));
             else if (!strcmp(key, "player_character")) playerCharacter = (val > 0.5f) ? 1 : 0;
             else if (!strcmp(key, "settings_version")) settingsVersion = (int)val;
         }
@@ -474,19 +474,23 @@ bool UIOverlay::needsRedraw() {
 // ---------------------------------------------------------------------------
 namespace {
 
-const int kNumLanguages = 7;
+const int kNumLanguages = PORT_GAME_LANGUAGE_COUNT;
 // In the game's language order (port_set_game_language).
-const char* const kPickerLangNames[kNumLanguages] = {"English", "Espanol", "Francais", "Deutsch", "Italiano", "Nederlands", "Japanese"};
-const char* const kPickerLangCodes[kNumLanguages] = {"EN", "ES", "FR", "DE", "IT", "NL", "JA"};
+const char* const kPickerLangNames[kNumLanguages] = {"English", "Espanol", "Francais", "Deutsch", "Italiano", "Nederlands", "Japanese", "Korean"};
+const char* const kPickerLangCodes[kNumLanguages] = {"EN", "ES", "FR", "DE", "IT", "NL", "JA", "KO"};
 
-// Button i of the picker: two rows (4 + 3), centred.
-void pickerRect(int i, float w, float h, float ui, float* x0, float* y0, float* x1, float* y1) {
+// The picker's buttons: one row up to four, two rows beyond.
+int pickerFirstRow(int count) { return count <= 4 ? count : (count + 1) / 2; }
+
+// Button `slot` of `count`, centred.
+void pickerRect(int slot, int count, float w, float h, float ui, float* x0, float* y0, float* x1, float* y1) {
     float bw = std::min(w * 0.205f, 250.0f * ui);
     float bh = 74.0f * ui;
     float gap = 16.0f * ui;
-    int row = i < 4 ? 0 : 1;
-    int col = i < 4 ? i : i - 4;
-    int inRow = row == 0 ? 4 : 3;
+    int first = pickerFirstRow(count);
+    int row = slot < first ? 0 : 1;
+    int col = slot < first ? slot : slot - first;
+    int inRow = row == 0 ? first : count - first;
     float rowW = inRow * bw + (inRow - 1) * gap;
     float top = h * 0.42f;
     *x0 = (w - rowW) * 0.5f + col * (bw + gap);
@@ -497,14 +501,53 @@ void pickerRect(int i, float w, float h, float ui, float* x0, float* y0, float* 
 
 }  // namespace
 
-void UIOverlay::startLanguagePicker() {
-    mPickerActive = true;
-    mPickerSel = std::max(0, std::min(kNumLanguages - 1, mSettings.languageIndex));
+int UIOverlay::languageSlot(int language) const {
+    for (int i = 0; i < mLangCount; i++) {
+        if (mLangList[i] == language) return i;
+    }
+    return 0;
+}
+
+int UIOverlay::sliderLanguageAt(float t) const {
+    int steps = std::max(1, mLangCount - 1);
+    int slot = std::max(0, std::min(mLangCount - 1, (int)(t * (float)steps + 0.5f)));
+    return mLangList[slot];
+}
+
+void UIOverlay::setAvailableLanguages(unsigned mask) {
+    if (mask == 0) {
+        mask = 0x7Fu;  // disc unknown: the seven the picker always had
+    }
+    mLangCount = 0;
+    for (int i = 0; i < kNumLanguages; i++) {
+        if (mask & (1u << i)) mLangList[mLangCount++] = i;
+    }
+    if (!(mask & (1u << mSettings.languageIndex))) {
+        LOGI("Language %s is not on this disc: using %s", kPickerLangNames[mSettings.languageIndex], kPickerLangNames[mLangList[0]]);
+        mSettings.languageIndex = mLangList[0];
+        port_set_game_language(mSettings.languageIndex);
+        if (!mSavePath.empty()) {
+            mSettings.save(mSavePath);
+        }
+    }
+    mPickerSel = languageSlot(mSettings.languageIndex);
     mDirty = true;
 }
 
-void UIOverlay::pickLanguage(int index) {
-    index = std::max(0, std::min(kNumLanguages - 1, index));
+void UIOverlay::pickOnlyLanguage() {
+    pickLanguage(0);
+}
+
+void UIOverlay::startLanguagePicker() {
+    mPickerActive = true;
+    mPickerSel = languageSlot(mSettings.languageIndex);
+    mDirty = true;
+}
+
+// `slot`: a button of the picker (mLangList).
+void UIOverlay::pickLanguage(int slot) {
+    slot = std::max(0, std::min(mLangCount - 1, slot));
+    int index = mLangList[slot];
     mSettings.languageIndex = index;
     port_set_game_language(index);
     if (!mSavePath.empty()) {
@@ -521,13 +564,15 @@ bool UIOverlay::pickerKey(int dx, int dy, bool confirm) {
         pickLanguage(mPickerSel);
         return true;
     }
-    int row = mPickerSel < 4 ? 0 : 1;
-    int col = mPickerSel < 4 ? mPickerSel : mPickerSel - 4;
-    if (dy) row = std::max(0, std::min(1, row + dy));
+    int first = pickerFirstRow(mLangCount);
+    int rows = mLangCount > first ? 2 : 1;
+    int row = mPickerSel < first ? 0 : 1;
+    int col = mPickerSel < first ? mPickerSel : mPickerSel - first;
+    if (dy) row = std::max(0, std::min(rows - 1, row + dy));
     col += dx;
-    int inRow = row == 0 ? 4 : 3;
+    int inRow = row == 0 ? first : mLangCount - first;
     col = std::max(0, std::min(inRow - 1, col));
-    mPickerSel = row == 0 ? col : 4 + col;
+    mPickerSel = row == 0 ? col : first + col;
     mDirty = true;
     return true;
 }
@@ -539,9 +584,9 @@ bool UIOverlay::pickerTouch(const AInputEvent* event, int screenW, int screenH) 
     float ui = (float)screenH / 650.0f;
     float px = AMotionEvent_getX(event, idx), py = AMotionEvent_getY(event, idx);
     int hit = -1;
-    for (int i = 0; i < kNumLanguages; i++) {
+    for (int i = 0; i < mLangCount; i++) {
         float x0, y0, x1, y1;
-        pickerRect(i, (float)screenW, (float)screenH, ui, &x0, &y0, &x1, &y1);
+        pickerRect(i, mLangCount, (float)screenW, (float)screenH, ui, &x0, &y0, &x1, &y1);
         if (px >= x0 && px <= x1 && py >= y0 && py <= y1) hit = i;
     }
     if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN || action == AMOTION_EVENT_ACTION_MOVE) {
@@ -854,7 +899,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
                             float trackX0 = drawerX + padX + 24.0f * uiScale;
                             float trackX1 = drawerX + drawerW - padX - 24.0f * uiScale;
                             float t = (px - trackX0) / std::max(1.0f, trackX1 - trackX0);
-                            int newLang = std::max(0, std::min(6, (int)(t * 6.0f + 0.5f)));
+                            int newLang = sliderLanguageAt(t);
                             if (newLang != mSettings.languageIndex) {
                                 mSettings.languageIndex = newLang;
                                 port_set_game_language(newLang);
@@ -1200,7 +1245,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
                                 float trackX0 = drawerX + padX + 24.0f * uiScale;
                                 float trackX1 = drawerX + drawerW - padX - 24.0f * uiScale;
                                 float t = (px - trackX0) / std::max(1.0f, trackX1 - trackX0);
-                                int newLang = std::max(0, std::min(6, (int)(t * 6.0f + 0.5f)));
+                                int newLang = sliderLanguageAt(t);
                                 if (newLang != mSettings.languageIndex) {
                                     mSettings.languageIndex = newLang;
                                     port_set_game_language(newLang);
@@ -1368,7 +1413,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
                             float trackX0 = drawerX + padX + 24.0f * uiScale;
                             float trackX1 = drawerX + drawerW - padX - 24.0f * uiScale;
                             float t = (px - trackX0) / std::max(1.0f, trackX1 - trackX0);
-                            int newLang = std::max(0, std::min(6, (int)(t * 6.0f + 0.5f)));
+                            int newLang = sliderLanguageAt(t);
                             if (newLang != mSettings.languageIndex) {
                                 mSettings.languageIndex = newLang;
                                 port_set_game_language(newLang);
@@ -2466,12 +2511,9 @@ void UIOverlay::render(int screenW, int screenH) {
                 });
 
             } else if (mSettingsTab == 2) {
-                static const char* kLangNames[7] = {
-                    "English", "Espanol", "Francais", "Deutsch", "Italiano", "Nederlands", "Japanese"
-                };
-                static const char* kLangCodes[7] = {
-                    "EN", "ES", "FR", "DE", "IT", "NL", "JP"
-                };
+                // Only the languages the installed disc has (mLangList).
+                const char* const* kLangNames = kPickerLangNames;
+                const char* const* kLangCodes = kPickerLangCodes;
 
                 auto drawLanguageSliderCard = [&](float y) {
                     drawCard(cX0, y, cX1, y + 96.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
@@ -2479,13 +2521,14 @@ void UIOverlay::render(int screenW, int screenH) {
                     drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
                     drawText("GAME LANGUAGE (SLIDER)", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
 
-                    int curLang = std::max(0, std::min(6, mSettings.languageIndex));
-                    drawText(kLangNames[curLang], cX1 - 14.0f * uiScale, y + 23.0f * uiScale, 0.34f * uiScale, rgba(0.40f, 0.85f, 1.0f, 1.0f), 2);
+                    int curLang = languageSlot(mSettings.languageIndex);
+                    int langSteps = std::max(1, mLangCount - 1);
+                    drawText(kLangNames[mLangList[curLang]], cX1 - 14.0f * uiScale, y + 23.0f * uiScale, 0.34f * uiScale, rgba(0.40f, 0.85f, 1.0f, 1.0f), 2);
 
                     float trackX0 = cX0 + 24.0f * uiScale;
                     float trackX1 = cX1 - 24.0f * uiScale;
                     float trackY = y + 52.0f * uiScale;
-                    float frac = (float)curLang / 6.0f;
+                    float frac = (float)curLang / (float)langSteps;
                     float knobX = trackX0 + frac * (trackX1 - trackX0);
 
                     // Inactive track
@@ -2496,13 +2539,13 @@ void UIOverlay::render(int screenW, int screenH) {
                     }
 
                     // Step ticks and short language codes
-                    for (int l = 0; l < 7; l++) {
-                        float stepX = trackX0 + ((float)l / 6.0f) * (trackX1 - trackX0);
+                    for (int l = 0; l < mLangCount; l++) {
+                        float stepX = trackX0 + ((float)l / (float)langSteps) * (trackX1 - trackX0);
                         bool isCur = (l == curLang);
                         Color dotCol = (l <= curLang) ? rgba(0.75f, 0.90f, 1.0f, 0.95f) : rgba(0.45f, 0.50f, 0.58f, 0.80f);
                         drawCircle(stepX, trackY, 3.0f * uiScale, dotCol);
                         Color codeCol = isCur ? rgba(1.0f, 1.0f, 1.0f, 1.0f) : cTextSecondary;
-                        drawText(kLangCodes[l], stepX, y + 80.0f * uiScale, (isCur ? 0.30f : 0.25f) * uiScale, codeCol, 1);
+                        drawText(kLangCodes[mLangList[l]], stepX, y + 80.0f * uiScale, (isCur ? 0.30f : 0.25f) * uiScale, codeCol, 1);
                     }
 
                     // Slider thumb knob
@@ -2689,12 +2732,12 @@ void UIOverlay::render(int screenW, int screenH) {
 
                         drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
                         drawText("DEBUG & DIAGNOSTICS", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
-                        drawText("Export engine log & device info for troubleshooting", cX0 + 14.0f * uiScale, y + 38.0f * uiScale, 0.26f * uiScale, cTextSecondary, 0);
+                        drawText("Save the engine log & device info to a file you choose", cX0 + 14.0f * uiScale, y + 38.0f * uiScale, 0.26f * uiScale, cTextSecondary, 0);
 
                         float btnY = y + 54.0f * uiScale;
                         float btnH = 46.0f * uiScale;
                         drawRoundRect(cX0 + 14.0f * uiScale, btnY, cX1 - 14.0f * uiScale, btnY + btnH, 16.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 0.95f));
-                        drawText("SHARE DEBUG LOG", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
+                        drawText("SAVE DEBUG LOG", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
                     });
                 } else {
                     // Vanilla Edition System Tab
@@ -2746,12 +2789,12 @@ void UIOverlay::render(int screenW, int screenH) {
 
                         drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
                         drawText("DEBUG & DIAGNOSTICS", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
-                        drawText("Export engine log & device info for troubleshooting", cX0 + 14.0f * uiScale, y + 38.0f * uiScale, 0.26f * uiScale, cTextSecondary, 0);
+                        drawText("Save the engine log & device info to a file you choose", cX0 + 14.0f * uiScale, y + 38.0f * uiScale, 0.26f * uiScale, cTextSecondary, 0);
 
                         float btnY = y + 54.0f * uiScale;
                         float btnH = 46.0f * uiScale;
                         drawRoundRect(cX0 + 14.0f * uiScale, btnY, cX1 - 14.0f * uiScale, btnY + btnH, 16.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 0.95f));
-                        drawText("SHARE DEBUG LOG", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
+                        drawText("SAVE DEBUG LOG", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
                     });
                 }
             } else if (mSettingsTab == 3) {
@@ -3015,14 +3058,15 @@ void UIOverlay::render(int screenW, int screenH) {
         drawText("GALAXY ANDROID", w * 0.5f, h * 0.17f, 0.95f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
         drawText("by RonyxDumb", w * 0.5f, h * 0.17f + 34.0f * uiScale, 0.34f * uiScale, rgba(0.62f, 0.68f, 0.80f, 1.0f), 1);
         drawText("Choose your language", w * 0.5f, h * 0.36f, 0.50f * uiScale, rgba(0.80f, 0.88f, 1.0f, 1.0f), 1);
-        for (int i = 0; i < kNumLanguages; i++) {
+        for (int i = 0; i < mLangCount; i++) {
             float x0, y0, x1, y1;
-            pickerRect(i, w, h, uiScale, &x0, &y0, &x1, &y1);
+            pickerRect(i, mLangCount, w, h, uiScale, &x0, &y0, &x1, &y1);
             bool sel = i == mPickerSel;
+            int lang = mLangList[i];
             drawRoundRect(x0, y0, x1, y1, 22.0f * uiScale, sel ? rgba(0.043f, 0.341f, 0.816f, 1.0f) : rgba(0.141f, 0.153f, 0.200f, 1.0f));
             if (!sel) drawRoundRect(x0, y0, x1, y1, 22.0f * uiScale, rgba(0.30f, 0.33f, 0.40f, 0.35f));
-            drawText(kPickerLangNames[i], (x0 + x1) * 0.5f, y0 + 36.0f * uiScale, 0.46f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
-            drawText(kPickerLangCodes[i], (x0 + x1) * 0.5f, y0 + 60.0f * uiScale, 0.28f * uiScale,
+            drawText(kPickerLangNames[lang], (x0 + x1) * 0.5f, y0 + 36.0f * uiScale, 0.46f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
+            drawText(kPickerLangCodes[lang], (x0 + x1) * 0.5f, y0 + 60.0f * uiScale, 0.28f * uiScale,
                      sel ? rgba(0.85f, 0.92f, 1.0f, 1.0f) : rgba(0.55f, 0.60f, 0.70f, 1.0f), 1);
         }
         drawText("Tap a language to start  -  or D-pad and A on a controller", w * 0.5f, h - 34.0f * uiScale, 0.28f * uiScale,

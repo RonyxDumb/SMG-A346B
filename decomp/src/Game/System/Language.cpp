@@ -250,6 +250,7 @@ namespace MR {
         case 4: cand1 = LANGUAGE_EUITALIAN; cand2 = LANGUAGE_USENGLISH; break;
         case 5: cand1 = LANGUAGE_EUDUTCH;   cand2 = LANGUAGE_EUENGLISH; break;
         case 6: cand1 = LANGUAGE_JPJAPANESE; cand2 = LANGUAGE_USENGLISH; break;
+        case 7: cand1 = LANGUAGE_KRKOREAN; cand2 = LANGUAGE_USENGLISH; break;
         default: break;
         }
 

@@ -74,6 +74,13 @@ public:
     // once a language is picked (touch, or D-pad / stick + A on a gamepad).
     void startLanguagePicker();
     bool isLanguagePickerActive() const { return mPickerActive; }
+    // The languages the installed disc has texts in (bit i: language i of
+    // port_set_game_language); only those are offered.  0: disc unknown, all
+    // are.  A saved language the disc lacks falls back to the disc's first.
+    void setAvailableLanguages(unsigned mask);
+    int availableLanguageCount() const { return mLangCount; }
+    // Picks the disc's only language without showing the picker.
+    void pickOnlyLanguage();
     // A gamepad key while the picker is up: dx/dy move the selection,
     // confirm picks it.  Returns true when consumed.
     bool pickerKey(int dx, int dy, bool confirm);
@@ -89,7 +96,12 @@ private:
 
     // Language picker
     bool mPickerActive = false;
-    int mPickerSel = 0;
+    int mPickerSel = 0;  // a slot of mLangList
+    int mLangList[8] = {0, 1, 2, 3, 4, 5, 6, 7};  // the languages offered
+    int mLangCount = 7;
+    int languageSlot(int language) const;
+    // The language under a point of the settings' language slider.
+    int sliderLanguageAt(float t) const;
     bool pickerTouch(const AInputEvent* event, int screenW, int screenH);
     void pickLanguage(int index);
 

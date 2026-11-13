@@ -56,6 +56,7 @@ struct MobileApp {
     bool targetReady = false;
 
     bool gameBooted = false;
+    bool languagesOffered = false;  // the language screen was set up for dataRoot's disc
     std::string dataRoot;
     std::string saveRoot;
 
@@ -133,6 +134,20 @@ bool checkGameFolder(const std::string& dir, bool* ready) {
     bool known = port_dvd_identify(dir.c_str()) != nullptr;
     if (ready) *ready = converted && dolData && known;
     return true;
+}
+
+// The start-up language screen, with the languages the disc copy in
+// a.dataRoot has texts in; a disc of one language needs no screen.
+void offerDiscLanguages(MobileApp& a) {
+    a.languagesOffered = true;
+    unsigned mask = port_dvd_language_mask(a.dataRoot.c_str());
+    LOGI("Disc languages mask: 0x%x", mask);
+    mobile_ui::get().setAvailableLanguages(mask);
+    if (mobile_ui::get().availableLanguageCount() > 1) {
+        mobile_ui::get().startLanguagePicker();
+    } else {
+        mobile_ui::get().pickOnlyLanguage();
+    }
 }
 
 std::string findGameData(const std::string& extDir) {
@@ -1128,12 +1143,13 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         fclose(opt);
     }
 
-    // The start-up language screen comes first; the game boots after it.
-    mobile_ui::get().startLanguagePicker();
-
-    // Search for game data files
+    // Search for game data files.  The start-up language screen comes once
+    // they are found (it offers the languages of that disc only); the game
+    // boots after it.
     a.dataRoot = findGameData(ext);
-    if (a.dataRoot.empty()) {
+    if (!a.dataRoot.empty()) {
+        offerDiscLanguages(a);
+    } else {
         promptStoragePermissionIfMissing(app->activity);
         mobile_ui::get().openSettings();
     }
@@ -1183,7 +1199,11 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
             if (a.dataRoot.empty()) {
                 a.dataRoot = findGameData(ext);
             }
-            if (!a.dataRoot.empty()) {
+            if (!a.dataRoot.empty() && !a.languagesOffered) {
+                // Game data just installed: ask for the language first.
+                offerDiscLanguages(a);
+            }
+            if (!a.dataRoot.empty() && !mobile_ui::get().isLanguagePickerActive()) {
                 LOGI("Booting game from: %s", a.dataRoot.c_str());
                 a.gameBooted = true;
                 mobile_ui::get().closeSettings();
@@ -1784,10 +1804,10 @@ extern "C" void port_share_log(void) {
         LOGE("port_share_log: failed to load AppInstaller class");
         env->ExceptionClear();
     } else {
-        jmethodID shareMethod = env->GetStaticMethodID(appInstallerClass, "shareLogFile", "(Landroid/app/Activity;)V");
+        jmethodID shareMethod = env->GetStaticMethodID(appInstallerClass, "saveLogFile", "(Landroid/app/Activity;)V");
         if (shareMethod) {
             env->CallStaticVoidMethod(appInstallerClass, shareMethod, activity->clazz);
-            LOGI("port_share_log: called AppInstaller.shareLogFile");
+            LOGI("port_share_log: called AppInstaller.saveLogFile");
         }
         if (env->ExceptionCheck()) {
             env->ExceptionClear();

@@ -62,6 +62,7 @@ package_flavor() {  # manifest, output APK, assets directory
   javac -nowarn -source 17 -target 17 -cp "$PLATFORM/android.jar" -d "$dir/obj" \
     installer-mobile/src/com/galaxy/installer/CookerEngine.java installer-mobile/src/com/galaxy/installer/InstallerActivity.java \
     installer-mobile/src/com/galaxy/installer/GalaxyFileProvider.java installer-mobile/src/com/galaxy/installer/AppInstaller.java \
+    installer-mobile/src/com/galaxy/installer/LogSaveActivity.java \
     "$dir/r_gen/com/galaxy/installer/R.java"
   "$BT/d8" --min-api 26 --lib "$PLATFORM/android.jar" --output "$dir/dex" $(find "$dir/obj" -name '*.class')
   python3 - "$dir/base.apk" "$dir/dex/classes.dex" "$WORK/apk" << 'PY'

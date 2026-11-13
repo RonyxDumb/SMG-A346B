@@ -174,98 +174,96 @@ public class AppInstaller {
         }).start();
     }
 
-    public static void shareLogFile(Activity activity) {
-        if (activity == null) return;
-        new Thread(() -> {
-            try {
-                File extFiles = activity.getExternalFilesDir(null);
-                File intFiles = activity.getFilesDir();
-                File extCache = activity.getExternalCacheDir();
-                File cacheDir = activity.getCacheDir();
+    /**
+     * Gathers the engine log (or, failing that, logcat and the device info)
+     * into one file in the cache directory and returns it.
+     */
+    public static File collectLogFile(Context context) throws Exception {
+        File extFiles = context.getExternalFilesDir(null);
+        File intFiles = context.getFilesDir();
+        File extCache = context.getExternalCacheDir();
+        File cacheDir = context.getCacheDir();
 
-                File[] candidates = new File[] {
-                    extFiles != null ? new File(extFiles, "petari_mobile_log.txt") : null,
-                    intFiles != null ? new File(intFiles, "petari_mobile_log.txt") : null,
-                    new File("/sdcard/GalaxyData", "petari_mobile_log.txt"),
-                    new File("/sdcard/Android/data/" + activity.getPackageName() + "/files", "petari_mobile_log.txt"),
-                    extFiles != null ? new File(extFiles, "petari_mobile_log.txt.prev") : null,
-                    intFiles != null ? new File(intFiles, "petari_mobile_log.txt.prev") : null
-                };
+        File[] candidates = new File[] {
+            extFiles != null ? new File(extFiles, "petari_mobile_log.txt") : null,
+            intFiles != null ? new File(intFiles, "petari_mobile_log.txt") : null,
+            new File("/sdcard/GalaxyData", "petari_mobile_log.txt"),
+            new File("/sdcard/Android/data/" + context.getPackageName() + "/files", "petari_mobile_log.txt"),
+            extFiles != null ? new File(extFiles, "petari_mobile_log.txt.prev") : null,
+            intFiles != null ? new File(intFiles, "petari_mobile_log.txt.prev") : null
+        };
 
-                File sourceLog = null;
-                for (File c : candidates) {
-                    if (c != null && c.exists() && c.length() > 0) {
-                        sourceLog = c;
-                        break;
-                    }
+        File sourceLog = null;
+        for (File c : candidates) {
+            if (c != null && c.exists() && c.length() > 0) {
+                sourceLog = c;
+                break;
+            }
+        }
+
+        File targetDir = extCache != null ? extCache : cacheDir;
+        if (!targetDir.exists()) {
+            targetDir.mkdirs();
+        }
+        File targetLog = new File(targetDir, "petari_mobile_log.txt");
+        if (targetLog.exists()) {
+            targetLog.delete();
+        }
+
+        String header = "Device: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
+                      + "Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")\n"
+                      + "Package: " + context.getPackageName() + "\n";
+
+        boolean wrote = false;
+        if (sourceLog != null) {
+            try (InputStream in = new FileInputStream(sourceLog);
+                 OutputStream out = new FileOutputStream(targetLog)) {
+                out.write(header.getBytes("UTF-8"));
+                out.write("\n".getBytes("UTF-8"));
+                byte[] buf = new byte[65536];
+                int len;
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                    wrote = true;
                 }
+            }
+        }
 
-                File targetDir = extCache != null ? extCache : cacheDir;
-                if (!targetDir.exists()) {
-                    targetDir.mkdirs();
-                }
-                File targetLog = new File(targetDir, "petari_mobile_log.txt");
-
-                if (sourceLog != null) {
-                    try (InputStream in = new FileInputStream(sourceLog);
-                         OutputStream out = new FileOutputStream(targetLog)) {
+        if (!wrote) {
+            try (OutputStream out = new FileOutputStream(targetLog)) {
+                out.write(header.getBytes("UTF-8"));
+                out.write("No log file found on disk: logcat follows.\n\n".getBytes("UTF-8"));
+                try {
+                    Process process = Runtime.getRuntime().exec(new String[]{"logcat", "-d", "-v", "time"});
+                    try (InputStream in = process.getInputStream()) {
                         byte[] buf = new byte[65536];
                         int len;
                         while ((len = in.read(buf)) > 0) {
                             out.write(buf, 0, len);
                         }
                     }
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to run logcat fallback", e);
                 }
-
-                if (!targetLog.exists() || targetLog.length() < 64) {
-                    try {
-                        Process process = Runtime.getRuntime().exec(new String[]{"logcat", "-d", "-v", "time"});
-                        try (InputStream in = process.getInputStream();
-                             OutputStream out = new FileOutputStream(targetLog, targetLog.exists())) {
-                            byte[] buf = new byte[65536];
-                            int len;
-                            while ((len = in.read(buf)) > 0) {
-                                out.write(buf, 0, len);
-                            }
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to run logcat fallback", e);
-                    }
-                }
-
-                if (!targetLog.exists() || targetLog.length() == 0) {
-                    try (FileOutputStream fos = new FileOutputStream(targetLog)) {
-                        String info = "Device: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
-                                    + "Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")\n"
-                                    + "Package: " + activity.getPackageName() + "\n"
-                                    + "No log file found on disk.\n";
-                        fos.write(info.getBytes("UTF-8"));
-                    }
-                }
-
-                activity.runOnUiThread(() -> {
-                    try {
-                        Uri logUri = Uri.parse("content://" + activity.getPackageName() + ".fileprovider/" + targetLog.getName());
-                        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-                        shareIntent.setType("text/plain");
-                        shareIntent.putExtra(Intent.EXTRA_STREAM, logUri);
-                        shareIntent.putExtra(Intent.EXTRA_SUBJECT, "Galaxy Android Debug Log (" + Build.MODEL + ")");
-                        shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-
-                        Intent chooser = Intent.createChooser(shareIntent, "Share Galaxy Android Debug Log");
-                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        activity.startActivity(chooser);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to share log file", e);
-                        Toast.makeText(activity, "Failed to share log: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                });
-            } catch (Exception e) {
-                Log.e(TAG, "Error preparing log file for sharing", e);
-                activity.runOnUiThread(() -> 
-                    Toast.makeText(activity, "Error preparing log: " + e.getMessage(), Toast.LENGTH_SHORT).show()
-                );
             }
-        }).start();
+        }
+        return targetLog;
+    }
+
+    /**
+     * Lets the player save the debug log wherever they like (the system's
+     * "save as" screen); they can then send the file however they want.
+     */
+    public static void saveLogFile(Activity activity) {
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(activity, LogSaveActivity.class);
+                activity.startActivity(intent);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to open the log save screen", e);
+                Toast.makeText(activity, "Failed to save log: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        });
     }
 }

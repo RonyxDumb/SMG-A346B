@@ -163,6 +163,12 @@ void port_open_url(const char* url);
 int port_is_plus_installed(void);
 void port_install_plus(void);
 void port_share_log(void);
+// The languages of port_set_game_language, in its order: english, spanish,
+// french, german, italian, dutch, japanese, korean.
+#define PORT_GAME_LANGUAGE_COUNT 8
+// Which of them the disc copy in `root` has texts in (bit i: language i);
+// 0 when the copy is of no disc the port knows.
+unsigned port_dvd_language_mask(const char* root);
 void port_set_game_language(int index);
 int port_get_game_language(void);
 int port_take_language_change_request(int* outLangIndex);

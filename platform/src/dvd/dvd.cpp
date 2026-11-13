@@ -187,18 +187,45 @@ extern "C" void port_language_set(const char* name) {
 static int sGameLanguageIndex = 0;
 static int sPendingLangChange = -1;
 
-static const char* kIndexToLangName[7] = {
+static const char* kIndexToLangName[PORT_GAME_LANGUAGE_COUNT] = {
     "english",
     "spanish",
     "french",
     "german",
     "italian",
     "dutch",
-    "japanese"
+    "japanese",
+    "korean"
 };
 
+extern "C" unsigned port_dvd_language_mask(const char* root) {
+    PortHostAllocScope scope;
+    std::vector<u8> fst = readFst(root);
+    if (fst.empty()) {
+        return 0;
+    }
+    for (const PortDisc& disc : kDiscs) {
+        if (!hasTexts(root, fst, disc.languages[0])) {
+            continue;
+        }
+        unsigned mask = 0;
+        for (int i = 0; i < disc.languageCount; i++) {
+            if (i != 0 && !hasTexts(root, fst, disc.languages[i])) {
+                continue;
+            }
+            for (int k = 0; k < PORT_GAME_LANGUAGE_COUNT; k++) {
+                if (strcmp(kIndexToLangName[k], disc.languages[i].name) == 0) {
+                    mask |= 1u << k;
+                }
+            }
+        }
+        return mask;
+    }
+    return 0;
+}
+
 extern "C" void port_set_game_language(int index) {
-    if (index < 0 || index >= 7) index = 0;
+    if (index < 0 || index >= PORT_GAME_LANGUAGE_COUNT) index = 0;
     sGameLanguageIndex = index;
     port_language_set(kIndexToLangName[index]);
     sPendingLangChange = index;

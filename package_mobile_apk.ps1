@@ -90,6 +90,7 @@ function Build-ApkFlavor {
         "installer-mobile\src\com\galaxy\installer\InstallerActivity.java",
         "installer-mobile\src\com\galaxy\installer\GalaxyFileProvider.java",
         "installer-mobile\src\com\galaxy\installer\AppInstaller.java",
+        "installer-mobile\src\com\galaxy\installer\LogSaveActivity.java",
         "$rGenDir\com\galaxy\installer\R.java"
     )
     & javac -source 17 -target 17 -cp "$platform\android.jar" -d $objDir $javaFiles
@@ -171,6 +172,7 @@ function Build-ApkFlavor {
         "installer-mobile\src\com\galaxy\installer\InstallerActivity.java",
         "installer-mobile\src\com\galaxy\installer\GalaxyFileProvider.java",
         "installer-mobile\src\com\galaxy\installer\AppInstaller.java",
+        "installer-mobile\src\com\galaxy\installer\LogSaveActivity.java",
         "$rGenDir\com\galaxy\installer\R.java"
     )
     & javac -source 17 -target 17 -cp "$platform\android.jar" -d $objDir $javaFiles

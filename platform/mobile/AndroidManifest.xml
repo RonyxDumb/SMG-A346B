@@ -55,6 +55,14 @@
             android:theme="@style/Theme.GalaxyInstaller"
             android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode" />
 
+        <!-- "Save debug log": asks the system where to save the file. -->
+        <activity
+            android:name="com.galaxy.installer.LogSaveActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode" />
+
         <provider
             android:name="com.galaxy.installer.GalaxyFileProvider"
             android:authorities="com.galaxy.mobile.fileprovider"
