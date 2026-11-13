@@ -28,6 +28,9 @@ smg_*.png
 out-mobile/apk/
 *.apk
 !out-mobile/GalaxyMobile.apk
-!out-mobile/GalaxyMobilePlus.apk
 !out-mobile/GalaxyInstaller.apk
 
+
+# CI / local Linux packaging work directories
+build-apk/
+build-shadergen-check/

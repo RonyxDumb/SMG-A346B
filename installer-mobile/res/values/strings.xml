@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">GalaxyInstaller</string>
-    <string name="header_title">GalaxyInstaller Setup</string>
+    <string name="header_title">Galaxy Android Setup</string>
     <string name="header_subtitle">Automated Game Data Cooker &amp; Installer</string>
     <string name="btn_back_to_game">← Back to Game</string>
     <string name="section_source">Step 1: Game Data Source (PC-less)</string>

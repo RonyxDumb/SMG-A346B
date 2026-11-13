@@ -249,10 +249,10 @@ public class AppInstaller {
                         Intent shareIntent = new Intent(Intent.ACTION_SEND);
                         shareIntent.setType("text/plain");
                         shareIntent.putExtra(Intent.EXTRA_STREAM, logUri);
-                        shareIntent.putExtra(Intent.EXTRA_SUBJECT, "GalaxyMobile Debug Log (" + Build.MODEL + ")");
+                        shareIntent.putExtra(Intent.EXTRA_SUBJECT, "Galaxy Android Debug Log (" + Build.MODEL + ")");
                         shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
 
-                        Intent chooser = Intent.createChooser(shareIntent, "Share GalaxyMobile Debug Log");
+                        Intent chooser = Intent.createChooser(shareIntent, "Share Galaxy Android Debug Log");
                         chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         activity.startActivity(chooser);
                     } catch (Exception e) {

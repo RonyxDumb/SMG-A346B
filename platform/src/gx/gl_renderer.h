@@ -101,6 +101,11 @@ public:
     // to the most recently prepared one.  Returns true if the frame changed.
     bool update();
     bool hasFrame() const;
+    // Shader programs the current frame needs that the background compiler
+    // has not finished yet (their draws are skipped).  Picks up programs
+    // finished since the frame was uploaded.  The caller can keep showing
+    // the last complete picture instead of one with missing geometry.
+    int pendingPrograms();
     uint64_t frameNumber() const;
 
     // Replays the current frame into `efb`.  With `eye`, the perspective 3D

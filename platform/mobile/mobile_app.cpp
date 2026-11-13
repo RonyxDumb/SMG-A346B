@@ -220,10 +220,19 @@ bool initEgl(MobileApp& a) {
         EGL_NONE
     };
 
+    // Preferably a config that also takes pbuffers: the renderer's
+    // background shader compiler makes its context current on one.
+    EGLint cfgAttrPbuffer[sizeof(cfgAttr) / sizeof(cfgAttr[0])];
+    memcpy(cfgAttrPbuffer, cfgAttr, sizeof(cfgAttr));
+    cfgAttrPbuffer[3] = EGL_WINDOW_BIT | EGL_PBUFFER_BIT;
+
     EGLint count = 0;
-    if (!eglChooseConfig(a.display, cfgAttr, &a.config, 1, &count) || count == 0) {
-        LOGE("eglChooseConfig failed");
-        return false;
+    if (!eglChooseConfig(a.display, cfgAttrPbuffer, &a.config, 1, &count) || count == 0) {
+        count = 0;
+        if (!eglChooseConfig(a.display, cfgAttr, &a.config, 1, &count) || count == 0) {
+            LOGE("eglChooseConfig failed");
+            return false;
+        }
     }
 
     const EGLint ctxAttr[] = {
@@ -258,6 +267,21 @@ int getDesiredTargetHeight(const MobileApp& a) {
 }
 
 void updateViewport(MobileApp& a);
+
+// Ends a frame.  The game's picture carries the EFB's alpha (0 over most of
+// a 3D scene), the blit copies it into the window, and what a compositor
+// does with a window whose alpha is not 1 differs between devices (black or
+// flickering 3D behind an intact HUD on some Mali phones): the window's
+// alpha is forced to 1 before every swap.
+static void swapWindow(MobileApp& a) {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    eglSwapBuffers(a.display, a.surface);
+}
 
 static void presentGameImage(MobileApp& a) {
     updateViewport(a);
@@ -398,6 +422,21 @@ int32_t onInput(android_app* app, AInputEvent* event) {
         bool isPointer = (source & AINPUT_SOURCE_CLASS_POINTER) != 0;
 
         // Physical gamepad analog sticks, D-Pad hat axes, and analog triggers
+        if (!isPointer && mobile_ui::get().isLanguagePickerActive()) {
+            // The language picker: hat or left stick moves the selection (one
+            // step per push), A (a key event) confirms.
+            static int sLastDx = 0, sLastDy = 0;
+            float hx = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0) + AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
+            float hy = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0) + AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
+            int dx = hx > 0.5f ? 1 : hx < -0.5f ? -1 : 0;
+            int dy = hy > 0.5f ? 1 : hy < -0.5f ? -1 : 0;
+            if ((dx && dx != sLastDx) || (dy && dy != sLastDy)) {
+                mobile_ui::get().pickerKey(dx != sLastDx ? dx : 0, dy != sLastDy ? dy : 0, false);
+            }
+            sLastDx = dx;
+            sLastDy = dy;
+            return 1;
+        }
         if (!isPointer) {
             float stickX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
             float stickY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
@@ -504,6 +543,23 @@ int32_t onInput(android_app* app, AInputEvent* event) {
 
         int32_t keyAction = AKeyEvent_getAction(event);
         bool down = (keyAction == AKEY_EVENT_ACTION_DOWN);
+
+        if (mobile_ui::get().isLanguagePickerActive()) {
+            if (down && AKeyEvent_getRepeatCount(event) == 0) {
+                switch (keyCode) {
+                case AKEYCODE_DPAD_LEFT: mobile_ui::get().pickerKey(-1, 0, false); break;
+                case AKEYCODE_DPAD_RIGHT: mobile_ui::get().pickerKey(1, 0, false); break;
+                case AKEYCODE_DPAD_UP: mobile_ui::get().pickerKey(0, -1, false); break;
+                case AKEYCODE_DPAD_DOWN: mobile_ui::get().pickerKey(0, 1, false); break;
+                case AKEYCODE_BUTTON_A:
+                case AKEYCODE_BUTTON_START:
+                case AKEYCODE_DPAD_CENTER:
+                case AKEYCODE_ENTER: mobile_ui::get().pickerKey(0, 0, true); break;
+                default: break;
+                }
+            }
+            return keyCode == AKEYCODE_BACK ? 0 : 1;
+        }
 
         switch (keyCode) {
         case AKEYCODE_BUTTON_A:
@@ -713,6 +769,28 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
     }
     gpu::setShaderCachePath((std::string(app->activity->internalDataPath) + "/shaders.bin").c_str());
 
+    // Renderer diagnostics without a rebuild: NAME=VALUE lines of
+    // <external files>/gpu_options.txt become environment variables (the
+    // PETARI_* switches of the renderer, e.g. PETARI_VTF=0, PETARI_GLVIS=tex).
+    if (FILE* opt = fopen((ext + "/gpu_options.txt").c_str(), "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), opt)) {
+            char* eq = strchr(line, '=');
+            if (!eq || line[0] == '#') continue;
+            *eq = 0;
+            char* val = eq + 1;
+            val[strcspn(val, "\r\n")] = 0;
+            if (strncmp(line, "PETARI_", 7) == 0) {
+                setenv(line, val, 1);
+                port_log("gpu_options: %s=%s", line, val);
+            }
+        }
+        fclose(opt);
+    }
+
+    // The start-up language screen comes first; the game boots after it.
+    mobile_ui::get().startLanguagePicker();
+
     // Search for game data files
     a.dataRoot = findGameData(ext);
     if (a.dataRoot.empty()) {
@@ -752,8 +830,9 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
             }
         }
 
-        // Boot game once window and data are available
-        if (!a.gameBooted) {
+        // Boot game once window and data are available, and the player has
+        // picked the language on the start-up screen.
+        if (!a.gameBooted && !mobile_ui::get().isLanguagePickerActive()) {
             if (a.dataRoot.empty()) {
                 a.dataRoot = findGameData(ext);
             }
@@ -840,7 +919,35 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         gpu::Renderer& r = gpu::renderer();
         bool newFrame = r.update();
 
+        // A new scene's first frames can need shader programs that are still
+        // compiling (the first time they are met; afterwards they come from
+        // the shader cache), and their draws would be missing for a few
+        // frames: half-loaded scenes flashing by.  Keep the last complete
+        // picture on screen meanwhile, for at most half a second.
+        static int64_t sHoldSince = 0;
+        static bool sHoldExpired = false;  // gave up waiting: no new hold until all programs are in
+        static bool sPresentedOnce = false;
+        bool waitShaders = false;
+        if (r.hasFrame() && (newFrame || sHoldSince)) {
+            int missing = r.pendingPrograms();
+            int64_t now = port_host_time_ns();
+            if (missing == 0) sHoldExpired = false;
+            if (missing > 0 && sPresentedOnce && !sHoldExpired) {
+                if (!sHoldSince) sHoldSince = now;
+                waitShaders = now - sHoldSince < 500000000ll;
+                if (!waitShaders) sHoldExpired = true;
+            }
+            if (!waitShaders) {
+                if (sHoldSince && missing == 0) newFrame = true;  // the held frame is complete now: show it
+                sHoldSince = 0;
+            }
+        }
+        if (waitShaders) {
+            usleep(1000);
+            continue;
+        }
         if (newFrame) {
+            sPresentedOnce = true;
             gPresentedFrames.store(r.frameNumber());
 
             // Check if offscreen target dimensions need to change (e.g. toggled fullscreen or graphics preset)
@@ -884,7 +991,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
             glViewport(0, 0, a.screenWidth, a.screenHeight);
             mobile_ui::get().render(a.screenWidth, a.screenHeight);
 
-            eglSwapBuffers(a.display, a.surface);
+            swapWindow(a);
         } else {
             if (!r.hasFrame() || (mobile_ui::get().isSettingsOpen() && mobile_ui::get().needsRedraw())) {
                 if (mobile_ui::get().needsRedraw()) {
@@ -904,7 +1011,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
                     }
                     glViewport(0, 0, a.screenWidth, a.screenHeight);
                     mobile_ui::get().render(a.screenWidth, a.screenHeight);
-                    eglSwapBuffers(a.display, a.surface);
+                    swapWindow(a);
                 } else {
                     // Idle screen while waiting for the game to boot or submit frames
                     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -912,7 +1019,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
                     glClearColor(0.04f, 0.05f, 0.10f, 1.0f);  // Galaxy deep blue
                     glClear(GL_COLOR_BUFFER_BIT);
                     mobile_ui::get().render(a.screenWidth, a.screenHeight);
-                    eglSwapBuffers(a.display, a.surface);
+                    swapWindow(a);
                     usleep(16000);
                 }
             } else {

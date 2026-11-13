@@ -222,6 +222,7 @@ struct Prepared {
     std::vector<Item> items;
     std::vector<ShaderUid> uids;
     std::vector<GLuint> cutProgs;  // cutaway variants of uids' programs, 0 until resolved
+    std::vector<GLuint> progs;     // uids' programs, 0 while the compile thread works on them
     std::vector<float> rows;    // vec4 matrix rows
     std::vector<u32> recs;      // kRecWords per draw record
     std::vector<float> states;  // vec4 light / projection / pixel states
@@ -361,6 +362,8 @@ struct Renderer::Impl {
     Builder workerBuilder;
 
     void init();
+    bool selfTestDataPath(bool textures);
+    void selfTestIntegerOps();
     // The program for `uid`: built now if `sync`, otherwise queued for the
     // compile thread (returns 0 until it is ready).
     GLuint program(const ShaderUid& uid, bool sync);
@@ -411,8 +414,11 @@ void main() {
 
 static const char* kCopyFs = R"(#version 320 es
 precision highp float;
-layout(binding = 0) uniform sampler2D s_color;
-layout(binding = 1) uniform sampler2D s_depth;
+precision highp int;
+// highp: a sampler's default precision is lowp, and Mali then hands back
+// 16-bit floats (a 24-bit depth would lose its low 13 bits).
+layout(binding = 0) uniform highp sampler2D s_color;
+layout(binding = 1) uniform highp sampler2D s_depth;
 uniform int u_mode;
 in vec2 v_uv;
 out vec4 o;
@@ -441,6 +447,208 @@ void main() {
 
 bool Renderer::Impl::sUseVertexTextures = false;
 
+// ---------------------------------------------------------------------------
+// Driver self-tests (run once at start-up, results go to the log)
+// ---------------------------------------------------------------------------
+namespace {
+
+// Draws a full-target quad with `prog` into a 4x4 RGBA8 target and returns
+// its centre pixel.
+struct ProbeTarget {
+    GLuint tex = 0, fbo = 0, vao = 0;
+    ProbeTarget() {
+        glGenTextures(1, &tex);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 4, 4);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glGenVertexArrays(1, &vao);
+    }
+    // indexed: the quad is vertices 100..103 of the bound vertex buffer,
+    // drawn with glDrawElements like the renderer's batches.
+    void draw(u8 out[4], bool indexed = false) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, 4, 4);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindVertexArray(vao);
+        if (indexed) {
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, (const void*)(uintptr_t)(3 * 4));
+        } else {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, out);
+    }
+    ~ProbeTarget() {
+        glBindVertexArray(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glUseProgram(0);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+};
+
+GLuint buildProbe(const std::string& vs, const std::string& fs) {
+    GLuint v = compileShader(GL_VERTEX_SHADER, vs), f = compileShader(GL_FRAGMENT_SHADER, fs);
+    GLuint prog = (v && f) ? linkProgram(v, f) : 0;
+    if (v) glDeleteShader(v);
+    if (f) glDeleteShader(f);
+    return prog;
+}
+
+}  // namespace
+
+// Fetches a draw record, a matrix row and two states the way the generated
+// shaders do, from far enough into the data that the texture path wraps to
+// further texel rows, and compares them with what was uploaded.  The quad is
+// drawn like a batch: indexed, its indices well above zero, the vertex buffer
+// bound at an offset, so a driver whose gl_VertexID is not the index (the
+// key to each vertex's draw record) fails here rather than in the game.
+bool Renderer::Impl::selfTestDataPath(bool textures) {
+    const u32 kW = 2048, kOrdinal = 9001, kRecord = 200, kRow = 3000, kState = 2500, kMagic = 0x89ABCDEFu;
+    std::vector<u32> vtxRec((size_t)kW * 4 * 2, 7u), recs((size_t)kW * 4 * 2, 0u);
+    std::vector<float> rows((size_t)kW * 4 * 2, 0.0f), states((size_t)kW * 4 * 2, 0.0f);
+    const u32 kFirstIndex = 100;
+    for (u32 i = 0; i < 4; i++) vtxRec[kOrdinal + kFirstIndex + i] = kRecord;
+    u32 rb = kRecord * kRecWords;
+    recs[rb + kRecPosSlots + 1] = kRow;
+    recs[rb + kRecPixel] = kState;
+    recs[rb + kRecFlags] = kMagic;
+    const float rowV[4] = {1.5f, -2.25f, 3.0e6f, 0.125f}, st0[4] = {0.25f, 0.5f, -3.0f, 1000.0f}, st1[4] = {-7.5f, 0.5f, 2.0f, 1.0f};
+    memcpy(&rows[(size_t)kRow * 4], rowV, sizeof(rowV));
+    memcpy(&states[(size_t)kState * 4], st0, sizeof(st0));
+    memcpy(&states[(size_t)(kState + 1) * 4], st1, sizeof(st1));
+
+    std::string vs = genProbeDataVs(textures), fs = genProbeDataFs(textures);
+
+    const char* name = textures ? "data textures" : "storage buffers";
+    GLuint prog = buildProbe(vs, fs);
+    if (!prog) {
+        port_log("gl: self-test (%s): the probe shaders do not build", name);
+        while (glGetError() != GL_NO_ERROR) {
+        }
+        return false;
+    }
+    GLuint bufs[4] = {}, tex[4] = {}, geom[2] = {};
+    u8 px[4] = {};
+    {
+        ProbeTarget target;
+        glUseProgram(prog);
+        glUniform1ui(glGetUniformLocation(prog, "u_firstOrdinal"), kOrdinal);
+        // 16 unused floats, then 104 vertices of which the last four are the
+        // quad; three unused indices, then the quad's six.
+        std::vector<float> verts(16 + (kFirstIndex + 4) * 2, 0.0f);
+        const float quad[8] = {-1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f};
+        memcpy(&verts[16 + kFirstIndex * 2], quad, sizeof(quad));
+        const u32 idx[9] = {0, 0, 0, kFirstIndex, kFirstIndex + 1, kFirstIndex + 2, kFirstIndex, kFirstIndex + 2, kFirstIndex + 3};
+        glGenBuffers(2, geom);
+        glBindVertexArray(target.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, geom[0]);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts.size() * 4), verts.data(), GL_STREAM_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, geom[1]);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribFormat(0, 2, GL_FLOAT, GL_FALSE, 0);
+        glVertexAttribBinding(0, 0);
+        glBindVertexBuffer(0, geom[0], 16 * 4, 8);
+        if (!textures) {
+            const void* data[4] = {rows.data(), recs.data(), states.data(), vtxRec.data()};
+            glGenBuffers(4, bufs);
+            for (int i = 0; i < 4; i++) {
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufs[i]);
+                glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)kW * 4 * 2 * 4, data[i], GL_STREAM_DRAW);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, (GLuint)i, bufs[i]);
+            }
+        } else {
+            const void* data[4] = {rows.data(), recs.data(), states.data(), vtxRec.data()};
+            glGenTextures(4, tex);
+            for (int i = 0; i < 4; i++) {
+                bool integer = i == 1 || i == 3;
+                glActiveTexture(GL_TEXTURE8 + i);
+                glBindTexture(GL_TEXTURE_2D, tex[i]);
+                glBindSampler(8 + i, 0);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                glTexImage2D(GL_TEXTURE_2D, 0, integer ? GL_RGBA32UI : GL_RGBA32F, (GLsizei)kW, 2, 0, integer ? GL_RGBA_INTEGER : GL_RGBA,
+                             integer ? GL_UNSIGNED_INT : GL_FLOAT, data[i]);
+            }
+            glActiveTexture(GL_TEXTURE0);
+        }
+        target.draw(px, true);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteBuffers(2, geom);
+        if (!textures) {
+            for (GLuint i = 0; i < 4; i++) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
+            glDeleteBuffers(4, bufs);
+        } else {
+            for (int i = 0; i < 4; i++) {
+                glActiveTexture(GL_TEXTURE8 + i);
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
+            glActiveTexture(GL_TEXTURE0);
+            glDeleteTextures(4, tex);
+        }
+    }
+    glDeleteProgram(prog);
+    GLenum err = glGetError();
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    bool ok = px[0] == 255 && px[1] == 255 && err == GL_NO_ERROR;
+    port_log("gl: self-test (%s): vertex stage %s, fragment stage %s, GL error 0x%x (pixel %u %u %u %u)", name, px[0] == 255 ? "ok" : "WRONG",
+             px[1] == 255 ? "ok" : "WRONG", err, px[0], px[1], px[2], px[3]);
+    return ok;
+}
+
+// The integer forms the TEV shaders rely on, with operands the compiler
+// cannot fold.  Only reported: the generator already sticks to the forms
+// that hold everywhere (scalar masks).
+void Renderer::Impl::selfTestIntegerOps() {
+    const int a[3] = {0x3FF, -5, 333}, b[3] = {17, 250, -1024}, c[3] = {255, 128, 1}, d[3] = {-300, 1023, 64};
+    int mask[3], lerp[3];
+    for (int i = 0; i < 3; i++) {
+        mask[i] = a[i] & 255;
+        int la = a[i] & 255, lb = b[i] & 255, lc = c[i] & 255;
+        lerp[i] = d[i] + ((((la << 8) + (lb - la) * (lc + (lc >> 7))) + 128) >> 8);
+    }
+    GLuint prog = buildProbe(genProbeQuadVs(), genProbeIntFs());
+    if (!prog) {
+        port_log("gl: self-test (integer ops): the probe shaders do not build");
+        return;
+    }
+    u8 px[4] = {};
+    {
+        ProbeTarget target;
+        glUseProgram(prog);
+        glUniform3iv(glGetUniformLocation(prog, "u_a"), 1, a);
+        glUniform3iv(glGetUniformLocation(prog, "u_b"), 1, b);
+        glUniform3iv(glGetUniformLocation(prog, "u_c"), 1, c);
+        glUniform3iv(glGetUniformLocation(prog, "u_d"), 1, d);
+        glUniform3iv(glGetUniformLocation(prog, "u_mask"), 1, mask);
+        glUniform3iv(glGetUniformLocation(prog, "u_lerp"), 1, lerp);
+        target.draw(px);
+    }
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    port_log("gl: self-test (integer ops): vector&vector %s, vector&scalar %s, scalar masks %s, TEV lerp %s", px[0] == 255 ? "ok" : "BROKEN",
+             px[1] == 255 ? "ok" : "BROKEN", px[2] == 255 ? "ok" : "BROKEN", px[3] == 255 ? "ok" : "BROKEN");
+}
+
+
 void Renderer::Impl::init() {
     GLint attribs = 0, vsBlocks = 0, fsBlocks = 0, blockSize = 0;
     glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &attribs);
@@ -448,9 +656,49 @@ void Renderer::Impl::init() {
     glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &fsBlocks);
     glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &blockSize);
     port_log("gl: %d vertex attribs, %d/%d storage blocks (vs/fs), %d MB max block", attribs, vsBlocks, fsBlocks, blockSize >> 20);
-    sUseVertexTextures = (vsBlocks < 4) || (debugEnv("PETARI_VTF") != nullptr);
-    if (sUseVertexTextures) {
-        port_log("gl: vertex SSBOs unavailable or forced (%d < 4); using vertex texture fetch fallback", vsBlocks);
+    const char* vendor = (const char*)glGetString(GL_VENDOR);
+    const char* rendererName = (const char*)glGetString(GL_RENDERER);
+    const char* version = (const char*)glGetString(GL_VERSION);
+    const char* glsl = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
+    GLint maxTex = 0, vsUnits = 0, fsUnits = 0, combinedUnits = 0, varyings = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+    glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vsUnits);
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &fsUnits);
+    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &combinedUnits);
+    glGetIntegerv(GL_MAX_VARYING_VECTORS, &varyings);
+    port_log("gl: vendor '%s', renderer '%s', version '%s', GLSL '%s'", vendor ? vendor : "?", rendererName ? rendererName : "?",
+             version ? version : "?", glsl ? glsl : "?");
+    port_log("gl: max texture %d, texture units %d vertex / %d fragment / %d combined, %d varying vectors", maxTex, vsUnits, fsUnits,
+             combinedUnits, varyings);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+
+    // The frame's data reaches the shaders through storage buffers (the
+    // original path, as on Adreno) or through data textures (no storage
+    // buffer in any stage).  Each path is tried on the real driver with a
+    // small draw before it is trusted; on Mali the textures go first: its
+    // drivers expose no (or few) vertex stage storage blocks, and texel
+    // fetches are the feature every GLES 3 driver gets right.
+    // PETARI_VTF=1 / PETARI_VTF=0 force textures / buffers.
+    bool isMali = (rendererName && strstr(rendererName, "Mali")) || (vendor && strstr(vendor, "ARM"));
+    bool canBuffers = vsBlocks >= 4 && fsBlocks >= 1;
+    bool canTextures = vsUnits >= 12 && fsUnits >= 11 && maxTex >= 2048;
+    bool buffersOk = canBuffers && selfTestDataPath(false);
+    bool texturesOk = canTextures && selfTestDataPath(true);
+    selfTestIntegerOps();
+    const char* force = debugEnv("PETARI_VTF");
+    if (force) {
+        sUseVertexTextures = atoi(force) != 0;
+    } else if (isMali) {
+        sUseVertexTextures = texturesOk || !buffersOk;
+    } else {
+        sUseVertexTextures = !buffersOk && (texturesOk || !canBuffers);
+    }
+    port_log("gl: data path self-test: storage buffers %s, data textures %s -> using %s%s", !canBuffers ? "unavailable" : buffersOk ? "ok" : "FAILED",
+             !canTextures ? "unavailable" : texturesOk ? "ok" : "FAILED", sUseVertexTextures ? "data textures" : "storage buffers",
+             force ? " (forced by PETARI_VTF)" : "");
+    if (!buffersOk && !texturesOk) {
+        port_log("gl: WARNING: neither data path passed its self-test on this GPU; rendering will likely be wrong");
     }
 
     for (FrameBuffers& fb : frameBufs) {
@@ -497,12 +745,6 @@ void Renderer::Impl::init() {
         }
     }
     port_log("gl: %d program binary formats; extensions: %s", numBinFmt, exts.c_str());
-    if (!sUseVertexTextures && vsBlocks < 4) {
-        port_log("gl: this GPU lacks the vertex attributes or storage blocks the renderer needs");
-    }
-    if (fsBlocks < 1) {
-        port_log("gl: this GPU lacks fragment shader storage blocks (%d < 1)", fsBlocks);
-    }
 
     GLuint vs = compileShader(GL_VERTEX_SHADER, kCopyVs), fs = compileShader(GL_FRAGMENT_SHADER, kCopyFs);
     copyProgram = linkProgram(vs, fs);
@@ -518,7 +760,7 @@ void Renderer::Impl::init() {
 // ---------------------------------------------------------------------------
 // Programs: disk cache of linked binaries + background compilation
 // ---------------------------------------------------------------------------
-static const u32 kCacheMagic = 0x3A43475Fu;  // "PGCM"
+static const u32 kCacheMagic = 0x3A434760u;  // bumped whenever cached binaries must go
 
 void Renderer::Impl::loadShaderCache() {
     if (sShaderCachePath.empty()) {
@@ -1580,28 +1822,26 @@ void Renderer::Impl::upload(Prepared& p, bool syncPrograms) {
         fb.fence = nullptr;
     }
     glBindVertexArray(0);  // the element buffer binding belongs to the bound VAO
+    // One glBufferData per buffer: new storage and its contents in a single
+    // call, so the driver never waits on (or copies) storage the GPU still
+    // reads, and never sees a separate glBufferSubData (slow on Mali).
     auto put = [&fb](int i, GLenum target, const void* data, size_t bytes) {
+        static const u32 zero[4] = {};
         glBindBuffer(target, fb.buf[i]);
-        if (bytes > fb.cap[i]) {
-            fb.cap[i] = bytes + bytes / 4 + 4096;
+        if (!bytes || !data) {
+            data = zero;
+            bytes = sizeof(zero);
         }
-        if (fb.cap[i] == 0) {
-            fb.cap[i] = 4096;
-        }
-        // Always orphan the buffer before writing so the driver allocates a fresh
-        // memory block if the GPU is still referencing previous storage.
-        glBufferData(target, (GLsizeiptr)fb.cap[i], nullptr, GL_STREAM_DRAW);
-        if (bytes && data) {
-            glBufferSubData(target, 0, (GLsizeiptr)bytes, data);
-        }
+        glBufferData(target, (GLsizeiptr)bytes, data, GL_STREAM_DRAW);
+        fb.cap[i] = bytes;
     };
     put(0, GL_ARRAY_BUFFER, f.verts.data(), f.verts.size() * 4);
     put(2, GL_ELEMENT_ARRAY_BUFFER, p.indices.data(), p.indices.size() * 4);
     vbo = fb.buf[0];
     ibo = fb.buf[2];
-    put(5, GL_SHADER_STORAGE_BUFFER, p.states.data(), p.states.size() * 4);
-    stateBuf = fb.buf[5];
     if (!sUseVertexTextures) {
+        put(5, GL_SHADER_STORAGE_BUFFER, p.states.data(), p.states.size() * 4);
+        stateBuf = fb.buf[5];
         put(1, GL_SHADER_STORAGE_BUFFER, p.vtxRec.data(), p.vtxRec.size() * 4);
         put(3, GL_SHADER_STORAGE_BUFFER, p.rows.data(), p.rows.size() * 4);
         put(4, GL_SHADER_STORAGE_BUFFER, p.recs.data(), p.recs.size() * 4);
@@ -1710,7 +1950,8 @@ void Renderer::Impl::upload(Prepared& p, bool syncPrograms) {
         }
     }
 
-    std::vector<GLuint> progs(p.uids.size());
+    std::vector<GLuint>& progs = p.progs;
+    progs.assign(p.uids.size(), 0);
     for (size_t i = 0; i < p.uids.size(); i++) {
         progs[i] = program(p.uids[i], syncPrograms);
     }
@@ -2166,8 +2407,8 @@ void Renderer::Impl::execute(EfbTarget& efb, const EyeView* eye, EfbTarget* hud,
         vtxRecTex = curFb.vtfTex[3];
     }
     glBindBufferBase(GL_UNIFORM_BUFFER, 4, eyeUbo);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, stateBuf);
     if (!sUseVertexTextures) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, stateBuf);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, rowBuf);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, recBuf);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, recVbo);
@@ -2552,6 +2793,34 @@ bool Renderer::update() {
 }
 
 bool Renderer::hasFrame() const { return sImpl && sImpl->cur; }
+
+int Renderer::pendingPrograms() {
+    if (!hasFrame()) {
+        return 0;
+    }
+    Prepared& p = *sImpl->cur;
+    int missing = 0;
+    bool resolved = false;
+    {
+        std::lock_guard<std::mutex> lock(sImpl->progLock);
+        for (size_t i = 0; i < p.progs.size() && i < p.uids.size(); i++) {
+            if (p.progs[i]) continue;
+            auto it = sImpl->programs.find(p.uids[i]);
+            if (it != sImpl->programs.end()) {
+                p.progs[i] = it->second;  // 0 if it failed to build: nothing to wait for
+                resolved |= it->second != 0;
+            } else if (sImpl->pendingPrograms.count(p.uids[i])) {
+                missing++;
+            }
+        }
+    }
+    if (resolved) {
+        for (Item& it : p.items) {
+            if (it.type == IT_DRAW && !it.program && it.uid < p.progs.size()) it.program = p.progs[it.uid];
+        }
+    }
+    return missing;
+}
 
 uint64_t Renderer::frameNumber() const { return hasFrame() ? sImpl->cur->number : 0; }
 

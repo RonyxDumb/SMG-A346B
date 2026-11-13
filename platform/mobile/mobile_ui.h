@@ -16,7 +16,7 @@ struct Settings {
     int playerCharacter = 0;
     float opacity = 0.65f;
     float scale = 1.0f;
-    bool dynamicStick = true;
+    bool dynamicStick = false;  // fixed thumbstick by default
     float stickOffsetX = 0.0f;
     float stickOffsetY = 0.0f;
     float buttonOffsetX = 0.0f;
@@ -30,7 +30,7 @@ struct Settings {
     int graphicsPreset = 2;
 
     // HD UI & HUD Textures (Super Mario 3D All-Stars high-res assets, ON by default in Plus)
-    bool hdUiTextures = true;
+    bool hdUiTextures = false;  // Plus-only feature, no longer built
 
     // Advanced Mods (all OFF by default, user preferences saved and restored across sessions)
     bool modSkipCutscenes = false;
@@ -38,6 +38,8 @@ struct Settings {
     bool modInfinitePowerup = false;
     bool modAdvancedHaptics = false;
     bool modFlightEverywhere = false;
+
+    int settingsVersion = 0;  // 2: fixed thumbstick default applied
 
     void load(const std::string& path);
     void save(const std::string& path) const;
@@ -66,6 +68,14 @@ public:
     void setPlusEdition(bool plus) { mPlusEdition = plus; }
     bool isPlusEdition() const { return mPlusEdition; }
 
+    // Start-up language screen: shown before the game boots; the game starts
+    // once a language is picked (touch, or D-pad / stick + A on a gamepad).
+    void startLanguagePicker();
+    bool isLanguagePickerActive() const { return mPickerActive; }
+    // A gamepad key while the picker is up: dx/dy move the selection,
+    // confirm picks it.  Returns true when consumed.
+    bool pickerKey(int dx, int dy, bool confirm);
+
 private:
     UIOverlay();
 
@@ -74,6 +84,12 @@ private:
     bool mPlusEdition = false;
     bool mInitialized = false;
     bool mDirty = false;
+
+    // Language picker
+    bool mPickerActive = false;
+    int mPickerSel = 0;
+    bool pickerTouch(const AInputEvent* event, int screenW, int screenH);
+    void pickLanguage(int index);
 
     // UI state
     bool mSettingsOpen = false;
