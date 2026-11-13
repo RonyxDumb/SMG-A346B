@@ -1,8 +1,8 @@
 # Android Galaxy
 
-Port nativo per Android di Super Mario Galaxy.
+Native Android port of Super Mario Galaxy.
 
-Testato su Samsung Galaxy A34 5G.
+Tested on Samsung Galaxy A34 5G.
 
 ![Titolo](screenshots/android-galaxy-title.png)
 ![Gameplay](screenshots/android-galaxy-gameplay.png)
