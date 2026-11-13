@@ -14,6 +14,9 @@
 #include "Game/Util/StringUtil.hpp"
 #include <JSystem/JKernel/JKRHeap.hpp>
 #include <cstdio>
+#ifdef TARGET_MOBILE
+#include <cstring>
+#endif
 
 namespace {
     NEW_NERVE(SaveDataHandleSequenceNoOperation, SaveDataHandleSequence, NoOperation);
@@ -27,6 +30,11 @@ namespace {
     NEW_NERVE(SaveDataHandleSequenceSaveAllWithoutWindow, SaveDataHandleSequence, SaveAllWithoutWindow);
     NEW_NERVE(SaveDataHandleSequencePreLoad, SaveDataHandleSequence, PreLoad);
     NEW_NERVE(SaveDataHandleSequencePreLoadDone, SaveDataHandleSequence, PreLoadDone);
+#ifdef TARGET_MOBILE
+    constexpr int kUserFileCount = 6;
+
+    NEW_NERVE(SaveDataHandleSequenceSaveCompletedUserFile, SaveDataHandleSequence, SaveCompletedUserFile);
+#endif
     NEW_NERVE(SaveDataHandleSequenceNoSaveConfirmRemind, SaveDataHandleSequence, NoSaveConfirmRemind);
     NEW_NERVE(SaveDataHandleSequenceErrorHandling, SaveDataHandleSequence, ErrorHandling);
 };  // namespace
@@ -259,6 +267,49 @@ void SaveDataHandleSequence::backupCurrentUserFile() {
     mBackupUserFile->loadFromConfigDataBinary(mCurrentUserFile->getConfigDataName(), mTempBuffer, SaveDataHandler::getEnoughtTempBufferSize());
 }
 
+#ifdef TARGET_MOBILE
+bool SaveDataHandleSequence::seedCompletedUserFile() {
+    if (mSysConfigFile->hasSeededCompletedFile()) {
+        return false;
+    }
+
+    bool seeded = false;
+    for (int index = kUserFileCount; index > 0; --index) {
+        restoreUserFileConfigData(mBackupUserFile, index);
+        if (mBackupUserFile->mIsConfigDataCorrupted || mBackupUserFile->isCreated()) {
+            continue;
+        }
+
+        if (mBackupUserFile->initializeCompletedData()) {
+            // Both characters start with the same completed progress in separate records.
+            mSaveDataHandler->initializeUserFileMemory(index, mBackupUserFile);
+            mSysConfigFile->markCompletedFileSeeded();
+            mSaveDataHandler->storeSysConfigFile(mSysConfigFile);
+            seeded = true;
+        }
+        break;
+    }
+
+    backupCurrentUserFile();
+    return seeded;
+}
+
+void SaveDataHandleSequence::exeSaveCompletedUserFile() {
+    if (MR::isFirstStep(this)) {
+        mSaveDataHandler->requestSaveSaveData();
+    }
+    if (!mSaveDataHandler->isDone()) {
+        return;
+    }
+    if (!mSaveDataHandler->getLastResultCode().isSuccess()) {
+        port_log("Could not write the completed file during startup; it will be included in the next save");
+    }
+
+    _24 = 2;
+    setNerve(GET_NERVE_ANON(SaveDataHandleSequenceNoOperation));
+}
+#endif
+
 void SaveDataHandleSequence::exeNoOperation() {
     mIsConfirmRemind = false;
     mIsSaveAndQuitMsg = false;
@@ -277,6 +328,12 @@ void SaveDataHandleSequence::exeCheckEnableToCreate() {
     }
 
     syncNoSaveFlagsFromErrorSequence();
+#ifdef TARGET_MOBILE
+    if (!_2A && !_2C && seedCompletedUserFile()) {
+        setNerve(GET_NERVE_ANON(SaveDataHandleSequenceSaveCompletedUserFile));
+        return;
+    }
+#endif
     _24 = 2;
     setNerve(GET_NERVE_ANON(SaveDataHandleSequenceNoOperation));
 }
@@ -474,6 +531,12 @@ void SaveDataHandleSequence::exePreLoadDone() {
         setNerve(GET_NERVE_ANON(SaveDataHandleSequenceErrorHandling));
     } else {
         restoreSysConfigFile(mSysConfigFile);
+#ifdef TARGET_MOBILE
+        if (seedCompletedUserFile()) {
+            setNerve(GET_NERVE_ANON(SaveDataHandleSequenceSaveCompletedUserFile));
+            return;
+        }
+#endif
         _24 = 2;
 
         setNerve(GET_NERVE_ANON(SaveDataHandleSequenceNoOperation));
@@ -538,6 +601,10 @@ void SaveDataHandleSequence::restoreUserFileConfigData(UserFile* pUserFile, int 
     char dataName[16];
     snprintf(dataName, sizeof(dataName), "config%1d", index);
 
+#ifdef TARGET_MOBILE
+    // Config records are shorter than game records. Clear the shared scratch buffer before copying one.
+    std::memset(mTempBuffer, 0, SaveDataHandler::getEnoughtTempBufferSize());
+#endif
     mSaveDataHandler->restoreGameDataFile(dataName, mTempBuffer, SaveDataHandler::getEnoughtTempBufferSize());
     pUserFile->loadFromConfigDataBinary(dataName, mTempBuffer, SaveDataHandler::getEnoughtTempBufferSize());
 }
@@ -648,6 +715,11 @@ bool SaveDataHandleSequence::tryNoSave() {
 }
 
 bool SaveDataHandleSequence::isEnablePointer() const {
+#ifdef TARGET_MOBILE
+    if (isNerve(GET_NERVE_ANON(SaveDataHandleSequenceSaveCompletedUserFile))) {
+        return false;
+    }
+#endif
     if (isNerve(GET_NERVE_ANON(SaveDataHandleSequenceNoOperation)) || isNerve(GET_NERVE_ANON(SaveDataHandleSequencePreLoad)) ||
         isNerve(GET_NERVE_ANON(SaveDataHandleSequencePreLoadDone))) {
         return false;

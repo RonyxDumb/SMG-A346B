@@ -62,6 +62,9 @@ public:
     bool isPassedStoryEvent(const char*) const;
     void followStoryEventByName(const char*);
     void resetAllData();
+#ifdef TARGET_MOBILE
+    bool completeCampaign();
+#endif
     u32 makeFileBinary(u8*, u32);
     bool loadFromFileBinary(const char*, const u8*, u32);
 

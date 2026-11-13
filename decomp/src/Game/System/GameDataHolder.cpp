@@ -13,6 +13,10 @@
 #include "Game/Util/MathUtil.hpp"
 #include <cstdio>
 
+#ifdef TARGET_MOBILE
+#include "Game/System/FindingLuigiEventScheduler.hpp"
+#endif
+
 extern const u8 StoryEventBCSV[];
 
 namespace {
@@ -307,6 +311,67 @@ void GameDataHolder::resetAllData() {
     mSpinDriverPathStorage->initializeData();
     mStarPieceAlmsStorage->initializeData();
 }
+
+#ifdef TARGET_MOBILE
+bool GameDataHolder::completeCampaign() {
+    constexpr s32 kCompletedPowerStars = 121;
+    for (s32 i = 0; i < mAllGalaxyStorage->getGalaxyNum(); ++i) {
+        auto* pGalaxy = mAllGalaxyStorage->getGalaxyStorage(i);
+        if (pGalaxy->mPowerStarNum > 8) {
+            return false;
+        }
+        for (s32 starId = 1; starId <= pGalaxy->mPowerStarNum; ++starId) {
+            GameDataSomeScenarioAccessor scenario(pGalaxy, starId);
+            scenario.setPowerStarFlag(true);
+            scenario.setFlagAlreadyVisited(true);
+        }
+    }
+
+    if (calcCurrentPowerStarNum() != kCompletedPowerStars || mAllGalaxyStorage->findIndex("PeachCastleFinalGalaxy") < 0) {
+        return false;
+    }
+
+    u32 latestStoryProgress = 0;
+    for (s32 i = 0; i < mMapInfo->getNumEntries(); ++i) {
+        u32 progress = 0;
+        if (mMapInfo->getValue(i, "progress", &progress) && progress > latestStoryProgress) {
+            latestStoryProgress = progress;
+        }
+    }
+    if (latestStoryProgress == 0 || latestStoryProgress > 255) {
+        return false;
+    }
+    mPlayerStatus->mStoryProgress = static_cast< u8 >(latestStoryProgress);
+
+    setGameEventValue("LibraryOpenNewStarCount", 0);
+    setPictureBookChapterAlreadyRead(getPictureBookChapterCanRead());
+    setGameEventValue("LuigiEventState", FindingLuigiEventScheduler::STATE_END);
+    setGameEventValue("WarpPodSaveBits", 0xffff);
+    addStockedStarPiece(9999);
+
+    for (GameEventFlagIter iter = GameEventFlagTable::getBeginIter(); !iter.isEnd(); iter.goNext()) {
+        GameEventFlagAccessor flag(iter.getFlag());
+        if (flag.isTypeStarPiece()) {
+            addStarPieceGivingToTicoSeed(flag.getStarPieceIndex() + 8, flag.getNeedStarPieceNum());
+            setGameEventValueForBit("TicoGalaxyAlreadyTalk", flag.getStarPieceIndex(), true);
+        }
+    }
+
+    // Some galaxy unlocks depend on other saved flags.
+    bool changed;
+    do {
+        changed = false;
+        for (GameEventFlagIter iter = GameEventFlagTable::getBeginIter(); !iter.isEnd(); iter.goNext()) {
+            const GameEventFlag* pFlag = iter.getFlag();
+            if ((pFlag->mSaveFlag & 1) == 0 && !isOnGameEventFlag(pFlag->mName)) {
+                changed |= mEventFlagChecker->tryOn(pFlag->mName);
+            }
+        }
+    } while (changed);
+
+    return isOnGameEventFlag("ViewCompleteEnding") && isOnGameEventFlag("PeachCastleFinalGalaxy");
+}
+#endif
 
 u32 GameDataHolder::makeFileBinary(u8* pData, u32 a2) {
     return mChunkHolder->makeFileBinary(pData, a2);

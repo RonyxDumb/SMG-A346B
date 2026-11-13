@@ -21,6 +21,7 @@ GalaxyMobile is a **native Android ARM64 port** of Super Mario Galaxy, compiled 
 
 ## Features
 
+- **Completed save slot**. On first launch, the game puts 121 Power Stars each for Mario and Luigi in slot 6 or the highest-numbered free slot, including the Grand Finale Galaxy star. You can delete or copy the preset from the file menu. If all six slots are in use, the game waits until a slot is free on a later launch.
 - **True Native Hor+ Ultrawide (No Stretch, No Zoom)**:
   - Dynamically adapts the 3D camera projection to modern mobile aspect ratios (such as 19.5:9, 20:9, and foldable aspect ratios).
   - Horizontally expands field of view (Hor+) so you see more of the galaxy around Mario without vertical cropping.

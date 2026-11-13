@@ -32,6 +32,9 @@ public:
     void makeConfigDataBinary(u8*, u32) const;
     void loadFromConfigDataBinary(const char*, const u8*, u32);
     void resetAllData();
+#ifdef TARGET_MOBILE
+    bool initializeCompletedData();
+#endif
     bool isViewNormalEnding() const;
     bool isViewCompleteEnding() const;
     bool isPowerStarGetFinalChallengeGalaxy() const;

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -54,6 +55,50 @@ static s32 errnoToNand(int e) {
         return NAND_RESULT_UNKNOWN;
     }
 }
+
+#ifdef TARGET_MOBILE
+static s32 writeAtomic(const std::string& path, const void* data, u32 size) {
+    std::string tempPath = path + ".tmp.XXXXXX";
+    int fd = mkostemp(tempPath.data(), O_CLOEXEC);
+    if (fd < 0) {
+        return errnoToNand(errno);
+    }
+
+    NANDFileInfo file{};
+    file.fileDescriptor = fd;
+    s32 bytes = NANDWrite(&file, data, size);
+    s32 result = bytes < 0 ? bytes : NAND_RESULT_OK;
+    if (bytes >= 0 && static_cast< u32 >(bytes) != size) {
+        result = NAND_RESULT_UNKNOWN;
+    }
+    if (result == NAND_RESULT_OK && fsync(fd) != 0) {
+        result = errnoToNand(errno);
+    }
+    if (close(fd) != 0 && result == NAND_RESULT_OK) {
+        result = errnoToNand(errno);
+    }
+    if (result == NAND_RESULT_OK && rename(tempPath.c_str(), path.c_str()) == 0) {
+        return NAND_RESULT_OK;
+    }
+    if (result == NAND_RESULT_OK) {
+        result = errnoToNand(errno);
+    }
+    unlink(tempPath.c_str());
+    return result;
+}
+
+extern "C" s32 port_nand_write_game_data(const void* data, u32 size) {
+    PortHostAllocScope scope;
+    const std::string path = hostPath("GameData.bin");
+    makeDirs(path);
+
+    s32 result = writeAtomic(path, data, size);
+    if (result == NAND_RESULT_OK) {
+        writeAtomic(path + ".bak", data, size);
+    }
+    return result;
+}
+#endif
 
 extern "C" {
 

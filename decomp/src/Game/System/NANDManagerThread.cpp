@@ -1,6 +1,12 @@
 #include "Game/System/NANDManagerThread.hpp"
 #include "Game/System/NANDManager.hpp"
 
+#ifdef TARGET_MOBILE
+#include <cstring>
+
+extern "C" s32 port_nand_write_game_data(const void*, u32);
+#endif
+
 NANDManagerThread::NANDManagerThread(int priority, int msgCount, JKRHeap* pHeap) : OSThreadWrapper(0x8000, msgCount, priority, pHeap) {
 }
 
@@ -41,6 +47,15 @@ void* NANDManagerThread::run() {
 }
 
 void NANDManagerThread::executeWriteSequence(NANDRequestInfo* pRequestInfo) {
+#ifdef TARGET_MOBILE
+    if (std::strcmp(pRequestInfo->mPath, "GameData.bin") == 0) {
+        pRequestInfo->mResult = port_nand_write_game_data(pRequestInfo->mWriteBuf, pRequestInfo->mFsBlock);
+        if (pRequestInfo->mResult != NAND_RESULT_OK) {
+            pRequestInfo->mFsBlock = 0;
+        }
+        return;
+    }
+#endif
     pRequestInfo->mResult = NANDCreate(pRequestInfo->mPath, pRequestInfo->mPermission, pRequestInfo->mAttribute);
 
     if (pRequestInfo->mResult == NAND_RESULT_OK || pRequestInfo->mResult == NAND_RESULT_EXISTS) {

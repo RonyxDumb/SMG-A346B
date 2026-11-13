@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Game/LiveActor//LiveActor.hpp"
+#include "Game/LiveActor/LiveActor.hpp"
 
 class SkeletalFishBabyRailHolder;
 

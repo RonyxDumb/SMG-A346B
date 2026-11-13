@@ -44,6 +44,10 @@ public:
     void restoreUserFile(UserFile*, int);
     void restoreUserFile(UserFile*, int, bool);
     void backupCurrentUserFile();
+#ifdef TARGET_MOBILE
+    bool seedCompletedUserFile();
+    void exeSaveCompletedUserFile();
+#endif
     void exeNoOperation();
     void exeCheckEnableToCreate();
     void exeSaveConfirm();

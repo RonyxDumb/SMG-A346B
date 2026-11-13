@@ -5,6 +5,9 @@
 
 class BinaryDataChunkHolder;
 class BinaryDataContentHeaderSerializer;
+#ifdef TARGET_MOBILE
+class CompletedFileSeedChunk;
+#endif
 
 class SysConfigChunk : public BinaryDataChunkBase {
     friend class SysConfigFile;
@@ -41,8 +44,15 @@ public:
     void setSentBytes(u32);
     void makeDataBinary(u8*, u32) const;
     void loadFromDataBinary(const u8*, u32);
+#ifdef TARGET_MOBILE
+    bool hasSeededCompletedFile() const;
+    void markCompletedFileSeeded();
+#endif
 
 private:
     /* 0x00 */ SysConfigChunk* mChunk;
     /* 0x04 */ BinaryDataChunkHolder* mChunkHolder;
+#ifdef TARGET_MOBILE
+    CompletedFileSeedChunk* mCompletedFileSeedChunk;
+#endif
 };

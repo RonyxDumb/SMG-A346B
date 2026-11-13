@@ -112,6 +112,22 @@ void UserFile::resetAllData() {
     mIsConfigDataCorrupted = false;
 }
 
+#ifdef TARGET_MOBILE
+bool UserFile::initializeCompletedData() {
+    resetAllData();
+    mConfigDataHolder->onCompleteEndingMario();
+    mConfigDataHolder->onCompleteEndingLuigi();
+
+    if (!mGameDataHolder->completeCampaign()) {
+        return false;
+    }
+
+    setCreated();
+    updateLastModified();
+    return true;
+}
+#endif
+
 bool UserFile::isViewNormalEnding() const {
     return mGameDataHolder->isOnGameEventFlag("ViewNormalEnding");
 }

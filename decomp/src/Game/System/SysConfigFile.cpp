@@ -2,6 +2,35 @@
 #include "Game/System/BinaryDataContentAccessor.hpp"
 #include "Game/Util/MemoryUtil.hpp"
 
+#ifdef TARGET_MOBILE
+class CompletedFileSeedChunk final : public BinaryDataChunkBase {
+public:
+    u32 makeHeaderHashCode() const override {
+        return 1;
+    }
+
+    u32 getSignature() const override {
+        return 'SEED';
+    }
+
+    s32 serialize(u8* pBuffer, u32) const override {
+        pBuffer[0] = mSeeded;
+        return 1;
+    }
+
+    s32 deserialize(const u8* pBuffer, u32 size) override {
+        mSeeded = size != 0 && pBuffer[0] != 0;
+        return 0;
+    }
+
+    void initializeData() override {
+        mSeeded = false;
+    }
+
+    bool mSeeded = false;
+};
+#endif
+
 SysConfigChunk::SysConfigChunk() : mHeaderSerializer(nullptr) {
     initHeaderSerializer();
     initializeData();
@@ -63,6 +92,10 @@ SysConfigFile::SysConfigFile() : mChunk(nullptr), mChunkHolder(nullptr) {
     mChunk = new SysConfigChunk();
 
     mChunkHolder->addChunk(mChunk);
+#ifdef TARGET_MOBILE
+    mCompletedFileSeedChunk = new CompletedFileSeedChunk();
+    mChunkHolder->addChunk(mCompletedFileSeedChunk);
+#endif
 }
 
 OSTime SysConfigFile::getTimeAnnounced() {
@@ -96,8 +129,21 @@ void SysConfigFile::makeDataBinary(u8* pBuffer, u32 size) const {
 }
 
 void SysConfigFile::loadFromDataBinary(const u8* pBuffer, u32 size) {
+#ifdef TARGET_MOBILE
+    mCompletedFileSeedChunk->initializeData();
+#endif
     mChunkHolder->loadFromFileBinary(pBuffer, size);
 }
+
+#ifdef TARGET_MOBILE
+bool SysConfigFile::hasSeededCompletedFile() const {
+    return mCompletedFileSeedChunk->mSeeded;
+}
+
+void SysConfigFile::markCompletedFileSeeded() {
+    mCompletedFileSeedChunk->mSeeded = true;
+}
+#endif
 
 s32 SysConfigChunk::serialize(u8* pBuffer, u32 size) const {
     void* pSrcBuffer = mHeaderSerializer->mStream.mBuffer;
