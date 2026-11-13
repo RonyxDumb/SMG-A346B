@@ -321,6 +321,7 @@ void Settings::load(const std::string& path) {
             else if (!strcmp(key, "dpad_on_right")) dpadOnRight = (val > 0.5f);
             else if (!strcmp(key, "dpad_offset_x")) dpadOffsetX = val;
             else if (!strcmp(key, "dpad_offset_y")) dpadOffsetY = val;
+            else if (!strcmp(key, "right_stick_pointer")) rightStickPointer = (val > 0.5f);
             else if (!strcmp(key, "mod_skip_cutscenes")) modSkipCutscenes = (val > 0.5f);
             else if (!strcmp(key, "mod_infinite_health")) modInfiniteHealth = (val > 0.5f);
             else if (!strcmp(key, "mod_infinite_powerup")) modInfinitePowerup = (val > 0.5f);
@@ -361,6 +362,7 @@ void Settings::save(const std::string& path) const {
     fprintf(f, "dpad_on_right=%d\n", dpadOnRight ? 1 : 0);
     fprintf(f, "dpad_offset_x=%.1f\n", dpadOffsetX);
     fprintf(f, "dpad_offset_y=%.1f\n", dpadOffsetY);
+    fprintf(f, "right_stick_pointer=%d\n", rightStickPointer ? 1 : 0);
     fprintf(f, "mod_skip_cutscenes=%d\n", modSkipCutscenes ? 1 : 0);
     fprintf(f, "mod_infinite_health=%d\n", modInfiniteHealth ? 1 : 0);
     fprintf(f, "mod_infinite_powerup=%d\n", modInfinitePowerup ? 1 : 0);
@@ -568,6 +570,11 @@ void UIOverlay::closeSettings() {
 void UIOverlay::openSettings() {
     mSettingsOpen = true;
     mDirty = true;
+}
+
+void UIOverlay::setPointer(float x, float y) {
+    mPointerX = std::max(-1.0f, std::min(1.0f, x));
+    mPointerY = std::max(-1.0f, std::min(1.0f, y));
 }
 
 bool UIOverlay::init() {
@@ -811,7 +818,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
             }
             totalContentH = matchingCount * (78.0f * uiScale) + 16.0f * uiScale;
         } else if (mSettingsTab == 0) {
-            totalContentH = 474.0f * uiScale;
+            totalContentH = 578.0f * uiScale;
         } else if (mSettingsTab == 1) {
             totalContentH = 150.0f * uiScale;
         } else if (mSettingsTab == 2) {
@@ -996,6 +1003,12 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
                                 mSettings.dpadOffsetX = 0.0f;
                                 mSettings.dpadOffsetY = 0.0f;
                             }
+                            mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+                        }
+                        // Row 8: Right Joystick Mode Segmented (Card 3: 502..562)
+                        else if (contentRelY >= 502.0f * uiScale && contentRelY <= 562.0f * uiScale) {
+                            float midX = drawerX + padX + contentW * 0.5f;
+                            mSettings.rightStickPointer = (px < midX);
                             mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                         }
                     } else if (mSettingsTab == 1) {
@@ -2145,7 +2158,7 @@ void UIOverlay::render(int screenW, int screenH) {
             }
             totalContentH = matchingCount * (78.0f * uiScale) + 16.0f * uiScale;
         } else if (mSettingsTab == 0) {
-            totalContentH = 474.0f * uiScale;
+            totalContentH = 578.0f * uiScale;
         } else if (mSettingsTab == 1) {
             totalContentH = 150.0f * uiScale;
         } else if (mSettingsTab == 2) {
@@ -2411,6 +2424,21 @@ void UIOverlay::render(int screenW, int screenH) {
 
                     drawRoundRect(b2X0, r3Y + 6.0f * uiScale, b2X1, r3Y + 40.0f * uiScale, 16.0f * uiScale, rgba(0.35f, 0.15f, 0.18f, 0.95f));
                     drawText("Reset", (b2X0 + b2X1) * 0.5f, r3Y + 28.0f * uiScale, 0.34f * uiScale, rgba(1.0f, 0.72f, 0.72f, 1.0f), 1);
+                });
+
+                // Card 3: Gamepad / Controller
+                renderCardBlock(472.0f * uiScale, 96.0f * uiScale, [&](float y) {
+                    drawCard(cX0, y, cX1, y + 96.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
+
+                    // Card Header
+                    drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
+                    drawText("CONTROLLER (GAMEPAD)", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
+
+                    // Row 1: Right Joystick Mode
+                    float r1Y = y + 32.0f * uiScale;
+                    drawText("Right Joystick Mode", cX0 + 14.0f * uiScale, r1Y + 14.0f * uiScale, 0.34f * uiScale, cTextPrimary, 0);
+                    const char* rStickOpts[2] = {"Star Pointer", "Camera"};
+                    drawSegmentedGroup(cX0 + 14.0f * uiScale, r1Y + 18.0f * uiScale, contentW - 28.0f * uiScale, 30.0f * uiScale, rStickOpts, 2, mSettings.rightStickPointer ? 0 : 1);
                 });
             } else if (mSettingsTab == 1) {
                 // =========================================================
