@@ -512,7 +512,7 @@ public class InstallerActivity extends Activity {
             appendLog("[SUCCESS] " + (message != null ? message : "Conversion complete!"));
             btnLaunchGame.setVisibility(View.VISIBLE);
             btnLaunchGame.setText("Return to Game 🚀");
-            Toast.makeText(this, "Game data ready! Return to GalaxyMobile to play.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Game data ready! Return to Galaxy Android to play.", Toast.LENGTH_LONG).show();
         } else {
             txtProgressStatus.setText(R.string.status_error);
             appendLog("[FAILURE] " + (message != null ? message : "Error during conversion."));

@@ -222,6 +222,7 @@ struct Prepared {
     std::vector<Item> items;
     std::vector<ShaderUid> uids;
     std::vector<GLuint> cutProgs;  // cutaway variants of uids' programs, 0 until resolved
+    std::vector<GLuint> progs;     // uids' programs, 0 while the compile thread works on them
     std::vector<float> rows;    // vec4 matrix rows
     std::vector<u32> recs;      // kRecWords per draw record
     std::vector<float> states;  // vec4 light / projection / pixel states
@@ -1949,7 +1950,8 @@ void Renderer::Impl::upload(Prepared& p, bool syncPrograms) {
         }
     }
 
-    std::vector<GLuint> progs(p.uids.size());
+    std::vector<GLuint>& progs = p.progs;
+    progs.assign(p.uids.size(), 0);
     for (size_t i = 0; i < p.uids.size(); i++) {
         progs[i] = program(p.uids[i], syncPrograms);
     }
@@ -2791,6 +2793,34 @@ bool Renderer::update() {
 }
 
 bool Renderer::hasFrame() const { return sImpl && sImpl->cur; }
+
+int Renderer::pendingPrograms() {
+    if (!hasFrame()) {
+        return 0;
+    }
+    Prepared& p = *sImpl->cur;
+    int missing = 0;
+    bool resolved = false;
+    {
+        std::lock_guard<std::mutex> lock(sImpl->progLock);
+        for (size_t i = 0; i < p.progs.size() && i < p.uids.size(); i++) {
+            if (p.progs[i]) continue;
+            auto it = sImpl->programs.find(p.uids[i]);
+            if (it != sImpl->programs.end()) {
+                p.progs[i] = it->second;  // 0 if it failed to build: nothing to wait for
+                resolved |= it->second != 0;
+            } else if (sImpl->pendingPrograms.count(p.uids[i])) {
+                missing++;
+            }
+        }
+    }
+    if (resolved) {
+        for (Item& it : p.items) {
+            if (it.type == IT_DRAW && !it.program && it.uid < p.progs.size()) it.program = p.progs[it.uid];
+        }
+    }
+    return missing;
+}
 
 uint64_t Renderer::frameNumber() const { return hasFrame() ? sImpl->cur->number : 0; }
 

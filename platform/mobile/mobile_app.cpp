@@ -422,6 +422,21 @@ int32_t onInput(android_app* app, AInputEvent* event) {
         bool isPointer = (source & AINPUT_SOURCE_CLASS_POINTER) != 0;
 
         // Physical gamepad analog sticks, D-Pad hat axes, and analog triggers
+        if (!isPointer && mobile_ui::get().isLanguagePickerActive()) {
+            // The language picker: hat or left stick moves the selection (one
+            // step per push), A (a key event) confirms.
+            static int sLastDx = 0, sLastDy = 0;
+            float hx = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0) + AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
+            float hy = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0) + AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
+            int dx = hx > 0.5f ? 1 : hx < -0.5f ? -1 : 0;
+            int dy = hy > 0.5f ? 1 : hy < -0.5f ? -1 : 0;
+            if ((dx && dx != sLastDx) || (dy && dy != sLastDy)) {
+                mobile_ui::get().pickerKey(dx != sLastDx ? dx : 0, dy != sLastDy ? dy : 0, false);
+            }
+            sLastDx = dx;
+            sLastDy = dy;
+            return 1;
+        }
         if (!isPointer) {
             float stickX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
             float stickY = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
@@ -528,6 +543,23 @@ int32_t onInput(android_app* app, AInputEvent* event) {
 
         int32_t keyAction = AKeyEvent_getAction(event);
         bool down = (keyAction == AKEY_EVENT_ACTION_DOWN);
+
+        if (mobile_ui::get().isLanguagePickerActive()) {
+            if (down && AKeyEvent_getRepeatCount(event) == 0) {
+                switch (keyCode) {
+                case AKEYCODE_DPAD_LEFT: mobile_ui::get().pickerKey(-1, 0, false); break;
+                case AKEYCODE_DPAD_RIGHT: mobile_ui::get().pickerKey(1, 0, false); break;
+                case AKEYCODE_DPAD_UP: mobile_ui::get().pickerKey(0, -1, false); break;
+                case AKEYCODE_DPAD_DOWN: mobile_ui::get().pickerKey(0, 1, false); break;
+                case AKEYCODE_BUTTON_A:
+                case AKEYCODE_BUTTON_START:
+                case AKEYCODE_DPAD_CENTER:
+                case AKEYCODE_ENTER: mobile_ui::get().pickerKey(0, 0, true); break;
+                default: break;
+                }
+            }
+            return keyCode == AKEYCODE_BACK ? 0 : 1;
+        }
 
         switch (keyCode) {
         case AKEYCODE_BUTTON_A:
@@ -756,6 +788,9 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         fclose(opt);
     }
 
+    // The start-up language screen comes first; the game boots after it.
+    mobile_ui::get().startLanguagePicker();
+
     // Search for game data files
     a.dataRoot = findGameData(ext);
     if (a.dataRoot.empty()) {
@@ -795,8 +830,9 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
             }
         }
 
-        // Boot game once window and data are available
-        if (!a.gameBooted) {
+        // Boot game once window and data are available, and the player has
+        // picked the language on the start-up screen.
+        if (!a.gameBooted && !mobile_ui::get().isLanguagePickerActive()) {
             if (a.dataRoot.empty()) {
                 a.dataRoot = findGameData(ext);
             }
@@ -883,7 +919,35 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         gpu::Renderer& r = gpu::renderer();
         bool newFrame = r.update();
 
+        // A new scene's first frames can need shader programs that are still
+        // compiling (the first time they are met; afterwards they come from
+        // the shader cache), and their draws would be missing for a few
+        // frames: half-loaded scenes flashing by.  Keep the last complete
+        // picture on screen meanwhile, for at most half a second.
+        static int64_t sHoldSince = 0;
+        static bool sHoldExpired = false;  // gave up waiting: no new hold until all programs are in
+        static bool sPresentedOnce = false;
+        bool waitShaders = false;
+        if (r.hasFrame() && (newFrame || sHoldSince)) {
+            int missing = r.pendingPrograms();
+            int64_t now = port_host_time_ns();
+            if (missing == 0) sHoldExpired = false;
+            if (missing > 0 && sPresentedOnce && !sHoldExpired) {
+                if (!sHoldSince) sHoldSince = now;
+                waitShaders = now - sHoldSince < 500000000ll;
+                if (!waitShaders) sHoldExpired = true;
+            }
+            if (!waitShaders) {
+                if (sHoldSince && missing == 0) newFrame = true;  // the held frame is complete now: show it
+                sHoldSince = 0;
+            }
+        }
+        if (waitShaders) {
+            usleep(1000);
+            continue;
+        }
         if (newFrame) {
+            sPresentedOnce = true;
             gPresentedFrames.store(r.frameNumber());
 
             // Check if offscreen target dimensions need to change (e.g. toggled fullscreen or graphics preset)

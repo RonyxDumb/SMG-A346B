@@ -331,9 +331,16 @@ void Settings::load(const std::string& path) {
             else if (!strcmp(key, "show_camera_cutout")) showCameraCutout = (val > 0.5f);
             else if (!strcmp(key, "language_index")) languageIndex = std::max(0, std::min(6, (int)(val + 0.5f)));
             else if (!strcmp(key, "player_character")) playerCharacter = (val > 0.5f) ? 1 : 0;
+            else if (!strcmp(key, "settings_version")) settingsVersion = (int)val;
         }
     }
     fclose(f);
+    // Older versions always saved the floating stick they defaulted to: the
+    // fixed stick is the default now, once; a later choice is kept.
+    if (settingsVersion < 2) {
+        dynamicStick = false;
+        settingsVersion = 2;
+    }
     LOGI("Loaded settings: show=%d, full=%d, op=%.2f, scale=%.2f, dpad=%d, skip=%d, infHp=%d, infPow=%d, hdUi=%d",
          showControls, fullscreen, opacity, scale, showDpad, modSkipCutscenes, modInfiniteHealth, modInfinitePowerup, hdUiTextures);
 }
@@ -364,6 +371,7 @@ void Settings::save(const std::string& path) const {
     fprintf(f, "show_camera_cutout=%d\n", showCameraCutout ? 1 : 0);
     fprintf(f, "language_index=%d\n", languageIndex);
     fprintf(f, "player_character=%d\n", playerCharacter);
+    fprintf(f, "settings_version=%d\n", 2);
     fclose(f);
     LOGI("Saved settings to %s", path.c_str());
 }
@@ -420,6 +428,11 @@ void UIOverlay::setSavePath(const std::string& path) {
 }
 
 bool UIOverlay::needsRedraw() {
+    if (mPickerActive) {
+        bool d = mDirty;
+        mDirty = false;
+        return d;
+    }
     float target = mSettingsOpen ? 1.0f : 0.0f;
     if (fabsf(mDrawerAnim - target) > 0.0005f) {
         return true;
@@ -452,6 +465,95 @@ bool UIOverlay::needsRedraw() {
     bool d = mDirty;
     mDirty = false;
     return d;
+}
+
+// ---------------------------------------------------------------------------
+// Start-up language picker
+// ---------------------------------------------------------------------------
+namespace {
+
+const int kNumLanguages = 7;
+// In the game's language order (port_set_game_language).
+const char* const kPickerLangNames[kNumLanguages] = {"English", "Espanol", "Francais", "Deutsch", "Italiano", "Nederlands", "Japanese"};
+const char* const kPickerLangCodes[kNumLanguages] = {"EN", "ES", "FR", "DE", "IT", "NL", "JA"};
+
+// Button i of the picker: two rows (4 + 3), centred.
+void pickerRect(int i, float w, float h, float ui, float* x0, float* y0, float* x1, float* y1) {
+    float bw = std::min(w * 0.205f, 250.0f * ui);
+    float bh = 74.0f * ui;
+    float gap = 16.0f * ui;
+    int row = i < 4 ? 0 : 1;
+    int col = i < 4 ? i : i - 4;
+    int inRow = row == 0 ? 4 : 3;
+    float rowW = inRow * bw + (inRow - 1) * gap;
+    float top = h * 0.42f;
+    *x0 = (w - rowW) * 0.5f + col * (bw + gap);
+    *y0 = top + row * (bh + gap);
+    *x1 = *x0 + bw;
+    *y1 = *y0 + bh;
+}
+
+}  // namespace
+
+void UIOverlay::startLanguagePicker() {
+    mPickerActive = true;
+    mPickerSel = std::max(0, std::min(kNumLanguages - 1, mSettings.languageIndex));
+    mDirty = true;
+}
+
+void UIOverlay::pickLanguage(int index) {
+    index = std::max(0, std::min(kNumLanguages - 1, index));
+    mSettings.languageIndex = index;
+    port_set_game_language(index);
+    if (!mSavePath.empty()) {
+        mSettings.save(mSavePath);
+    }
+    mPickerActive = false;
+    mDirty = true;
+    LOGI("Language picked: %s", kPickerLangNames[index]);
+}
+
+bool UIOverlay::pickerKey(int dx, int dy, bool confirm) {
+    if (!mPickerActive) return false;
+    if (confirm) {
+        pickLanguage(mPickerSel);
+        return true;
+    }
+    int row = mPickerSel < 4 ? 0 : 1;
+    int col = mPickerSel < 4 ? mPickerSel : mPickerSel - 4;
+    if (dy) row = std::max(0, std::min(1, row + dy));
+    col += dx;
+    int inRow = row == 0 ? 4 : 3;
+    col = std::max(0, std::min(inRow - 1, col));
+    mPickerSel = row == 0 ? col : 4 + col;
+    mDirty = true;
+    return true;
+}
+
+bool UIOverlay::pickerTouch(const AInputEvent* event, int screenW, int screenH) {
+    int32_t actionWithIndex = AMotionEvent_getAction(event);
+    int32_t action = actionWithIndex & AMOTION_EVENT_ACTION_MASK;
+    size_t idx = (actionWithIndex & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    float ui = (float)screenH / 650.0f;
+    float px = AMotionEvent_getX(event, idx), py = AMotionEvent_getY(event, idx);
+    int hit = -1;
+    for (int i = 0; i < kNumLanguages; i++) {
+        float x0, y0, x1, y1;
+        pickerRect(i, (float)screenW, (float)screenH, ui, &x0, &y0, &x1, &y1);
+        if (px >= x0 && px <= x1 && py >= y0 && py <= y1) hit = i;
+    }
+    if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN || action == AMOTION_EVENT_ACTION_MOVE) {
+        if (hit >= 0 && hit != mPickerSel) {
+            mPickerSel = hit;
+            mDirty = true;
+        }
+    } else if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_POINTER_UP) {
+        if (hit >= 0) {
+            mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+            pickLanguage(hit);
+        }
+    }
+    return true;  // nothing reaches the game or the settings meanwhile
 }
 
 void UIOverlay::closeSettings() {
@@ -560,6 +662,10 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad, int& sp
     int32_t eventType = AInputEvent_getType(event);
     if (eventType != AINPUT_EVENT_TYPE_MOTION) {
         return false;
+    }
+
+    if (mPickerActive) {
+        return pickerTouch(event, screenW, screenH);
     }
 
     int32_t actionWithIndex = AMotionEvent_getAction(event);
@@ -707,9 +813,9 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad, int& sp
         } else if (mSettingsTab == 0) {
             totalContentH = 474.0f * uiScale;
         } else if (mSettingsTab == 1) {
-            totalContentH = 432.0f * uiScale;
+            totalContentH = 150.0f * uiScale;
         } else if (mSettingsTab == 2) {
-            totalContentH = mPlusEdition ? (1176.0f * uiScale) : (826.0f * uiScale);
+            totalContentH = mPlusEdition ? (1176.0f * uiScale) : (446.0f * uiScale);
         } else {
             totalContentH = 780.0f * uiScale;
         }
@@ -903,25 +1009,6 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad, int& sp
                         else if (contentRelY >= 82.0f * uiScale && contentRelY <= 134.0f * uiScale) {
                             mSettings.showCameraCutout = !mSettings.showCameraCutout;
                             port_set_camera_cutout(mSettings.showCameraCutout ? 1 : 0);
-                            mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
-                        }
-                        // Row 3: Resolution Preset Selector (Card 2: 178..228)
-                        else if (contentRelY >= 178.0f * uiScale && contentRelY <= 228.0f * uiScale) {
-                            float cardX0 = drawerX + padX;
-                            float cX0 = cardX0 + 8.0f * uiScale;
-                            float chipW = (contentW - 16.0f * uiScale - 9.0f * uiScale) / 4.0f;
-                            float relX = px - cX0;
-                            if (relX >= 0.0f) {
-                                int chip = (int)(relX / (chipW + 3.0f * uiScale));
-                                if (chip >= 0 && chip < 4) {
-                                    mSettings.graphicsPreset = chip;
-                                    mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
-                                }
-                            }
-                        }
-                        // Row 4: HD UI & HUD Textures Switch (Card 3: 358..412)
-                        else if (contentRelY >= 358.0f * uiScale && contentRelY <= 412.0f * uiScale) {
-                            mSettings.hdUiTextures = !mSettings.hdUiTextures;
                             mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                         }
                     } else if (mSettingsTab == 3) {
@@ -1124,35 +1211,13 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad, int& sp
                                 port_open_installer();
                                 mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                             }
-                            // Open / Install GalaxyMobile+ (Card 2: 214..260)
-                            else if (contentRelY >= 214.0f * uiScale && contentRelY <= 260.0f * uiScale) {
-                                port_install_plus();
-                                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
-                            }
-                            // Haptic Feedback Switch (Card 3: 300..352)
-                            else if (contentRelY >= 300.0f * uiScale && contentRelY <= 352.0f * uiScale) {
+                            // Haptic Feedback Switch (Card 2: 166..218)
+                            else if (contentRelY >= 166.0f * uiScale && contentRelY <= 218.0f * uiScale) {
                                 mSettings.modAdvancedHaptics = !mSettings.modAdvancedHaptics;
                                 mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                             }
-                            // Game Language Slider (Card 3b: 398..462)
-                            else if (contentRelY >= 398.0f * uiScale && contentRelY <= 462.0f * uiScale) {
-                                float trackX0 = drawerX + padX + 24.0f * uiScale;
-                                float trackX1 = drawerX + drawerW - padX - 24.0f * uiScale;
-                                float t = (px - trackX0) / std::max(1.0f, trackX1 - trackX0);
-                                int newLang = std::max(0, std::min(6, (int)(t * 6.0f + 0.5f)));
-                                if (newLang != mSettings.languageIndex) {
-                                    mSettings.languageIndex = newLang;
-                                    port_set_game_language(newLang);
-                                    mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
-                                }
-                            }
-                            // Support & Donations Card (564..680)
-                            else if (contentRelY >= 564.0f * uiScale && contentRelY <= 680.0f * uiScale) {
-                                port_open_url("https://ko-fi.com/sebsies");
-                                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
-                            }
-                            // Debug & Diagnostics Card (690..806)
-                            else if (contentRelY >= 690.0f * uiScale && contentRelY <= 806.0f * uiScale) {
+                            // Debug & Diagnostics Card (324..440)
+                            else if (contentRelY >= 324.0f * uiScale && contentRelY <= 440.0f * uiScale) {
                                 port_share_log();
                                 mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                             }
@@ -1190,16 +1255,6 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad, int& sp
             float dy = py - closeBtnY;
             if (dx * dx + dy * dy <= 28.0f * uiScale * 28.0f * uiScale) {
                 closeSettings();
-                return true;
-            }
-
-            // Donate Button at top-right of drawer (left of close button)
-            float donateBtnW = 74.0f * uiScale;
-            float donateBtnX = closeBtnX - 26.0f * uiScale - donateBtnW;
-            if (px >= donateBtnX - 6.0f * uiScale && px <= donateBtnX + donateBtnW + 6.0f * uiScale &&
-                py >= 16.0f * uiScale && py <= 54.0f * uiScale) {
-                port_open_url("https://ko-fi.com/sebsies");
-                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                 return true;
             }
 
@@ -1291,7 +1346,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad, int& sp
                     mDrawerScrollStartOffset = mDrawerScrollY;
                     mDrawerIsScrolling = false;
                     mDraggingLanguageSlider = false;
-                    if (mSettingsTab == 2) {
+                    if (mSettingsTab == 2 && mPlusEdition) {
                         float contentRelY = py - contentTop + mDrawerScrollY;
                         float langMinY = mPlusEdition ? (746.0f * uiScale) : (398.0f * uiScale);
                         float langMaxY = mPlusEdition ? (810.0f * uiScale) : (462.0f * uiScale);
@@ -2092,9 +2147,9 @@ void UIOverlay::render(int screenW, int screenH) {
         } else if (mSettingsTab == 0) {
             totalContentH = 474.0f * uiScale;
         } else if (mSettingsTab == 1) {
-            totalContentH = 432.0f * uiScale;
+            totalContentH = 150.0f * uiScale;
         } else if (mSettingsTab == 2) {
-            totalContentH = mPlusEdition ? (1176.0f * uiScale) : (826.0f * uiScale);
+            totalContentH = mPlusEdition ? (1176.0f * uiScale) : (446.0f * uiScale);
         } else {
             totalContentH = 780.0f * uiScale;
         }
@@ -2382,66 +2437,6 @@ void UIOverlay::render(int screenW, int screenH) {
                     drawM3Switch(cX1 - swW - 14.0f * uiScale, r2Y + 8.0f * uiScale, swW, swH, mSwAnimCameraCutout);
                 });
 
-                // Card 2: 3D Render Resolution Preset
-                renderCardBlock(150.0f * uiScale, 176.0f * uiScale, [&](float y) {
-                    drawCard(cX0, y, cX1, y + 176.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
-
-                    drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
-                    drawText("3D RENDER RESOLUTION PRESET", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
-
-                    // 4-way Preset Segmented Button
-                    float r1Y = y + 34.0f * uiScale;
-                    static const char* kPresetNames[4] = { "720p HD", "900p HD+", "1080p FHD", "Native Ultra" };
-                    drawSegmentedGroup(cX0 + 14.0f * uiScale, r1Y, contentW - 28.0f * uiScale, 36.0f * uiScale, kPresetNames, 4, mSettings.graphicsPreset);
-
-                    // Live Status Box
-                    float boxY = y + 78.0f * uiScale;
-                    float boxH = 86.0f * uiScale;
-                    drawRoundRect(cX0 + 14.0f * uiScale, boxY, cX1 - 14.0f * uiScale, boxY + boxH, 12.0f * uiScale, rgba(0.165f, 0.180f, 0.215f, 0.95f));
-
-                    const char* resChip = "1080p FHD • Recommended";
-                    const char* resSub = "Internal 1920x1080 render target. Optimal balance.";
-                    Color badgeBg = rgba(0.10f, 0.28f, 0.44f, 0.90f);
-                    Color badgeTxt = rgba(0.40f, 0.85f, 1.0f, 1.0f);
-                    Color badgeDot = rgba(0.220f, 0.741f, 0.969f, 1.0f);
-
-                    if (mSettings.graphicsPreset == 0) {
-                        resChip = "720p HD • Power Saver";
-                        resSub = "Internal 1280x720 render target. Cooler battery operation.";
-                        badgeBg = rgba(0.12f, 0.32f, 0.20f, 0.90f);
-                        badgeTxt = rgba(0.50f, 0.95f, 0.60f, 1.0f);
-                        badgeDot = rgba(0.290f, 0.871f, 0.502f, 1.0f);
-                    } else if (mSettings.graphicsPreset == 1) {
-                        resChip = "900p HD+ • Performance";
-                        resSub = "Internal 1600x900 render target. High fluidity.";
-                        badgeBg = rgba(0.35f, 0.28f, 0.10f, 0.90f);
-                        badgeTxt = rgba(1.0f, 0.85f, 0.40f, 1.0f);
-                        badgeDot = rgba(0.984f, 0.749f, 0.141f, 1.0f);
-                    } else if (mSettings.graphicsPreset == 3) {
-                        resChip = "Native Display • Ultra Fidelity";
-                        resSub = "Full 1440p+ QHD native device pixel grid. Maximum crispness.";
-                        badgeBg = rgba(0.34f, 0.18f, 0.42f, 0.90f);
-                        badgeTxt = rgba(0.92f, 0.65f, 1.0f, 1.0f);
-                        badgeDot = rgba(0.85f, 0.45f, 0.98f, 1.0f);
-                    }
-
-                    drawStatusChip(cX0 + 26.0f * uiScale, boxY + 14.0f * uiScale, resChip, badgeBg, badgeTxt, badgeDot);
-                    drawText(resSub, cX0 + 26.0f * uiScale, boxY + 54.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
-                    drawText("Directly scales internal 3D scene geometry & shader buffers.", cX0 + 26.0f * uiScale, boxY + 70.0f * uiScale, 0.24f * uiScale, rgba(0.55f, 0.60f, 0.70f, 0.75f), 0);
-                });
-
-                // Card 3: Texture Remaster
-                renderCardBlock(334.0f * uiScale, 88.0f * uiScale, [&](float y) {
-                    drawCard(cX0, y, cX1, y + 88.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
-
-                    drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
-                    drawText("TEXTURE ENHANCEMENTS", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
-
-                    float r1Y = y + 34.0f * uiScale;
-                    drawText("HD UI & HUD (3D All-Stars)", cX0 + 14.0f * uiScale, r1Y + 18.0f * uiScale, 0.38f * uiScale, cTextPrimary, 0);
-                    drawText("Crisp native 1080p text, icons, buttons & health meter", cX0 + 14.0f * uiScale, r1Y + 34.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
-                    drawM3Switch(cX1 - swW - 14.0f * uiScale, r1Y + 8.0f * uiScale, swW, swH, mSwAnimHdUi);
-                });
             } else if (mSettingsTab == 2) {
                 static const char* kLangNames[7] = {
                     "English", "Espanol", "Francais", "Deutsch", "Italiano", "Nederlands", "Japanese"
@@ -2695,30 +2690,8 @@ void UIOverlay::render(int screenW, int screenH) {
                         drawText("OPEN GAME INSTALLER & COOKER", (cX0 + cX1) * 0.5f, btnY + 22.0f * uiScale, 0.34f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
                     });
 
-                    // Card 2: GalaxyMobile+ All-Star Edition Upgrade
-                    renderCardBlock(140.0f * uiScale, 126.0f * uiScale, [&](float y) {
-                        drawCard(cX0, y, cX1, y + 126.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
-
-                        drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, rgba(0.988f, 0.827f, 0.302f, 1.0f));
-                        drawText("GALAXYMOBILE+ ALL-STAR EDITION", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, rgba(0.988f, 0.827f, 0.302f, 1.0f), 0);
-
-                        bool plusInstalled = (port_is_plus_installed() != 0);
-                        if (plusInstalled) {
-                            drawStatusChip(cX0 + 14.0f * uiScale, y + 36.0f * uiScale, "Installed on Device", rgba(0.12f, 0.32f, 0.20f, 0.90f), rgba(0.50f, 0.95f, 0.60f, 1.0f), rgba(0.290f, 0.871f, 0.502f, 1.0f));
-                        } else {
-                            drawStatusChip(cX0 + 14.0f * uiScale, y + 36.0f * uiScale, "Bundled APK Ready (v0.7.5)", rgba(0.35f, 0.28f, 0.10f, 0.90f), rgba(1.0f, 0.85f, 0.40f, 1.0f), rgba(0.984f, 0.749f, 0.141f, 1.0f));
-                        }
-                        drawText("Includes Graphics Presets, HD UI, Cheats & Galaxy Warp.", cX0 + 14.0f * uiScale, y + 74.0f * uiScale, 0.26f * uiScale, cTextSecondary, 0);
-
-                        float btnY = y + 84.0f * uiScale;
-                        Color pBtnBg = plusInstalled ? rgba(0.14f, 0.48f, 0.26f, 0.95f) : rgba(0.38f, 0.20f, 0.68f, 0.95f);
-                        drawRoundRect(cX0 + 14.0f * uiScale, btnY, cX1 - 14.0f * uiScale, btnY + 34.0f * uiScale, 16.0f * uiScale, pBtnBg);
-                        const char* pBtnTxt = plusInstalled ? "OPEN GALAXYMOBILE+" : "INSTALL GALAXYMOBILE+";
-                        drawText(pBtnTxt, (cX0 + cX1) * 0.5f, btnY + 22.0f * uiScale, 0.34f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
-                    });
-
                     // Card 3: Vibration & Haptics
-                    renderCardBlock(274.0f * uiScale, 88.0f * uiScale, [&](float y) {
+                    renderCardBlock(140.0f * uiScale, 88.0f * uiScale, [&](float y) {
                         drawCard(cX0, y, cX1, y + 88.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
 
                         drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
@@ -2730,34 +2703,17 @@ void UIOverlay::render(int screenW, int screenH) {
                         drawM3Switch(cX1 - swW - 14.0f * uiScale, r1Y + 8.0f * uiScale, swW, swH, mSwAnimHaptics);
                     });
 
-                    // Card 3b: Game Language Slider
-                    renderCardBlock(370.0f * uiScale, 96.0f * uiScale, drawLanguageSliderCard);
-
                     // Card 4: System Info
-                    renderCardBlock(474.0f * uiScale, 80.0f * uiScale, [&](float y) {
+                    renderCardBlock(236.0f * uiScale, 80.0f * uiScale, [&](float y) {
                         drawCard(cX0, y, cX1, y + 80.0f * uiScale, 18.0f * uiScale, rgba(0.165f, 0.180f, 0.215f, 0.95f), cCardBorder);
 
-                        drawStatusChip(cX0 + 16.0f * uiScale, y + 14.0f * uiScale, "GalaxyMobile v0.7.5", rgba(0.10f, 0.28f, 0.44f, 0.90f), rgba(0.40f, 0.85f, 1.0f, 1.0f), cHeader);
-                        drawText("Vanilla Edition • Native ARM64 • Vulkan/GLES3", cX0 + 16.0f * uiScale, y + 54.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
-                        drawText("Optimized for all Android 11+ Snapdragon & Dimensity chipsets.", cX0 + 16.0f * uiScale, y + 68.0f * uiScale, 0.24f * uiScale, rgba(0.55f, 0.60f, 0.70f, 0.75f), 0);
-                    });
-
-                    // Card 5: Support & Donations
-                    renderCardBlock(564.0f * uiScale, 116.0f * uiScale, [&](float y) {
-                        drawCard(cX0, y, cX1, y + 116.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
-
-                        drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, rgba(0.92f, 0.28f, 0.30f, 1.0f));
-                        drawText("SUPPORT & DONATIONS", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, rgba(0.92f, 0.28f, 0.30f, 1.0f), 0);
-                        drawText("Support GalaxyMobile development on Ko-fi!", cX0 + 14.0f * uiScale, y + 38.0f * uiScale, 0.26f * uiScale, cTextSecondary, 0);
-
-                        float btnY = y + 54.0f * uiScale;
-                        float btnH = 46.0f * uiScale;
-                        drawRoundRect(cX0 + 14.0f * uiScale, btnY, cX1 - 14.0f * uiScale, btnY + btnH, 16.0f * uiScale, rgba(0.92f, 0.28f, 0.30f, 0.95f));
-                        drawText("DONATE ON KO-FI (ko-fi.com/sebsies)", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
+                        drawStatusChip(cX0 + 16.0f * uiScale, y + 14.0f * uiScale, "Galaxy Android v0.8.0", rgba(0.10f, 0.28f, 0.44f, 0.90f), rgba(0.40f, 0.85f, 1.0f, 1.0f), cHeader);
+                        drawText("by RonyxDumb - Native ARM64 - OpenGL ES 3.2", cX0 + 16.0f * uiScale, y + 54.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
+                        drawText("The game language is chosen at start-up.", cX0 + 16.0f * uiScale, y + 68.0f * uiScale, 0.24f * uiScale, cTextSecondary, 0);
                     });
 
                     // Card 6: Debug & Diagnostics
-                    renderCardBlock(690.0f * uiScale, 116.0f * uiScale, [&](float y) {
+                    renderCardBlock(324.0f * uiScale, 116.0f * uiScale, [&](float y) {
                         drawCard(cX0, y, cX1, y + 116.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
 
                         drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
@@ -2962,7 +2918,7 @@ void UIOverlay::render(int screenW, int screenH) {
 
             // Header Title & Cogwheel
             drawCogwheel(drawerX + padX + 16.0f * uiScale, 36.0f * uiScale, 15.0f * uiScale, cHeader, cogRot);
-            const char* appTitle = mPlusEdition ? "GalaxyMobile+" : "GalaxyMobile";
+            const char* appTitle = "Galaxy Android";
             drawText(appTitle, drawerX + padX + 40.0f * uiScale, 44.0f * uiScale, 0.52f * uiScale, cTextPrimary, 0);
 
             // Version chip pill badge next to title
@@ -2973,19 +2929,13 @@ void UIOverlay::render(int screenW, int screenH) {
             }
             float vChipX = drawerX + padX + 46.0f * uiScale + strW;
             drawRoundRect(vChipX, 26.0f * uiScale, vChipX + 54.0f * uiScale, 48.0f * uiScale, 11.0f * uiScale, rgba(0.18f, 0.24f, 0.35f, 0.85f));
-            drawText("v0.7.5", vChipX + 27.0f * uiScale, 42.0f * uiScale, 0.30f * uiScale, cHeader, 1);
+            drawText("v0.8.0", vChipX + 27.0f * uiScale, 42.0f * uiScale, 0.30f * uiScale, cHeader, 1);
 
             // Close [X] circular tonal button
             float closeBtnX = drawerX + drawerW - 36.0f * uiScale;
             float closeBtnY = 36.0f * uiScale;
             drawCircle(closeBtnX, closeBtnY, 18.0f * uiScale, rgba(0.188f, 0.196f, 0.224f, 0.95f));
             drawCloseIcon(closeBtnX, closeBtnY, 9.0f * uiScale, rgba(0.761f, 0.776f, 0.812f, 0.95f));
-
-            // Donate pill button
-            float donateBtnW = 74.0f * uiScale;
-            float donateBtnX = closeBtnX - 26.0f * uiScale - donateBtnW;
-            drawRoundRect(donateBtnX, 24.0f * uiScale, donateBtnX + donateBtnW, 48.0f * uiScale, 12.0f * uiScale, rgba(0.92f, 0.28f, 0.30f, 0.95f));
-            drawText("Donate", donateBtnX + donateBtnW * 0.5f, 41.0f * uiScale, 0.31f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
 
             // Material 3 Tab Dock ([ Controls ]  [ Display ]  [ System / Advanced ])
             float tabBoxY0 = 62.0f * uiScale;
@@ -3026,6 +2976,29 @@ void UIOverlay::render(int screenW, int screenH) {
             drawRoundRect(doneX0, doneY, doneX1, doneY + 38.0f * uiScale, 19.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 1.0f));
             drawText("Done", (doneX0 + doneX1) * 0.5f, doneY + 24.0f * uiScale, 0.40f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
         }
+    }
+
+    // -------------------------------------------------------------
+    // Start-up language picker (covers everything else)
+    // -------------------------------------------------------------
+    if (mPickerActive) {
+        verts.clear();
+        drawRoundRect(0.0f, 0.0f, w, h, 0.0f, rgba(0.035f, 0.045f, 0.090f, 1.0f));
+        drawText("GALAXY ANDROID", w * 0.5f, h * 0.17f, 0.95f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
+        drawText("by RonyxDumb", w * 0.5f, h * 0.17f + 34.0f * uiScale, 0.34f * uiScale, rgba(0.62f, 0.68f, 0.80f, 1.0f), 1);
+        drawText("Choose your language", w * 0.5f, h * 0.36f, 0.50f * uiScale, rgba(0.80f, 0.88f, 1.0f, 1.0f), 1);
+        for (int i = 0; i < kNumLanguages; i++) {
+            float x0, y0, x1, y1;
+            pickerRect(i, w, h, uiScale, &x0, &y0, &x1, &y1);
+            bool sel = i == mPickerSel;
+            drawRoundRect(x0, y0, x1, y1, 22.0f * uiScale, sel ? rgba(0.043f, 0.341f, 0.816f, 1.0f) : rgba(0.141f, 0.153f, 0.200f, 1.0f));
+            if (!sel) drawRoundRect(x0, y0, x1, y1, 22.0f * uiScale, rgba(0.30f, 0.33f, 0.40f, 0.35f));
+            drawText(kPickerLangNames[i], (x0 + x1) * 0.5f, y0 + 36.0f * uiScale, 0.46f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
+            drawText(kPickerLangCodes[i], (x0 + x1) * 0.5f, y0 + 60.0f * uiScale, 0.28f * uiScale,
+                     sel ? rgba(0.85f, 0.92f, 1.0f, 1.0f) : rgba(0.55f, 0.60f, 0.70f, 1.0f), 1);
+        }
+        drawText("Tap a language to start  -  or D-pad and A on a controller", w * 0.5f, h - 34.0f * uiScale, 0.28f * uiScale,
+                 rgba(0.50f, 0.55f, 0.65f, 1.0f), 1);
     }
 
     if (verts.empty()) return;

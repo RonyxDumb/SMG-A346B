@@ -1,8 +1,6 @@
 #!/bin/bash
-# Builds everything and packages the two phone APKs on Linux (CI or local):
-#   out-mobile/GalaxyMobilePlus.apk   GalaxyMobile+ (mods enabled)
-#   out-mobile/GalaxyMobile.apk       GalaxyMobile, with the Plus APK and the installer bundled
-# The Linux counterpart of package_mobile_apk.ps1.  Needs ANDROID_HOME (build-tools,
+# Builds everything and packages the phone APK on Linux (CI or local):
+#   out-mobile/GalaxyAndroid.apk   Galaxy Android, one universal arm64 APK (game + installer)  Needs ANDROID_HOME (build-tools,
 # platforms/android-34+), ANDROID_NDK_HOME, a JDK 17+, cmake, ninja and python3.
 #   tools/ci/build_apks.sh [--skip-native]
 set -eo pipefail
@@ -82,14 +80,10 @@ PY
   echo "packaged $out_apk ($(wc -c < "$out_apk") bytes)"
 }
 
-# The Plus APK first: the standard one carries it as an asset.
-mkdir -p "$WORK/assets-plus" "$WORK/assets-vanilla"
-cp -r installer-mobile/assets/. "$WORK/assets-plus/"
-find "$WORK/assets-plus" -name '__pycache__' -prune -exec rm -rf {} +
-rm -f "$WORK/assets-plus/GalaxyMobilePlus.apk"
-package_flavor platform/mobile/AndroidManifest_plus.xml "$OUT/GalaxyMobilePlus.apk" "$WORK/assets-plus"
-cp -r "$WORK/assets-plus/." "$WORK/assets-vanilla/"
-cp "$OUT/GalaxyMobilePlus.apk" "$WORK/assets-vanilla/GalaxyMobilePlus.apk"
-package_flavor platform/mobile/AndroidManifest.xml "$OUT/GalaxyMobile.apk" "$WORK/assets-vanilla"
+mkdir -p "$WORK/assets"
+cp -r installer-mobile/assets/. "$WORK/assets/"
+find "$WORK/assets" -name '__pycache__' -prune -exec rm -rf {} +
+rm -f "$WORK/assets/GalaxyMobilePlus.apk"
+package_flavor platform/mobile/AndroidManifest.xml "$OUT/GalaxyAndroid.apk" "$WORK/assets"
 rm -rf "$WORK"
-ls -l "$OUT"/GalaxyMobile.apk "$OUT"/GalaxyMobilePlus.apk
+ls -l "$OUT"/GalaxyAndroid.apk

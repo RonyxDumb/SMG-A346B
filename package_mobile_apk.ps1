@@ -122,6 +122,87 @@ z.close()
     Write-Host "Successfully packaged ${Label}: $OutApk ($($apkInfo.Length) bytes)"
 }
 
+# One universal APK (the Plus edition is no longer built)
+Build-ApkFlavor -Manifest "platform\mobile\AndroidManifest.xml" -OutApk "$out\GalaxyAndroid.apk" -Label "Galaxy Android"
+
+if (Test-Path "$out\res_platform.zip") { Remove-Item "$out\res_platform.zip" -Force }
+if (Test-Path "$out\res_installer.zip") { Remove-Item "$out\res_installer.zip" -Force }
+& "$bt\aapt2.exe" compile --dir platform/android/res -o "$out\res_platform.zip"
+& "$bt\aapt2.exe" compile --dir installer-mobile/res -o "$out\res_installer.zip"
+
+function Build-ApkFlavor {
+    param(
+        [string]$Manifest,
+        [string]$OutApk,
+        [string]$Label
+    )
+
+    Write-Host "--- Packaging $Label ---"
+    if (Test-Path "$out\base.apk") { Remove-Item "$out\base.apk" -Force }
+    if (Test-Path "$out\aligned.apk") { Remove-Item "$out\aligned.apk" -Force }
+
+    $objDir = "$build\obj"
+    $dexDir = "$build\dex"
+    $rGenDir = "$build\r_gen"
+
+    if (Test-Path $objDir) { Remove-Item -Recurse -Force $objDir }
+    if (Test-Path $dexDir) { Remove-Item -Recurse -Force $dexDir }
+    if (Test-Path $rGenDir) { Remove-Item -Recurse -Force $rGenDir }
+
+    New-Item -ItemType Directory -Force -Path $objDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $dexDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $rGenDir | Out-Null
+
+    # Link APK and generate R.java for this exact manifest
+    & "$bt\aapt2.exe" link -o "$out\base.apk" --manifest $Manifest `
+      -R "$out\res_platform.zip" -R "$out\res_installer.zip" --auto-add-overlay `
+      --extra-packages com.galaxy.installer `
+      --java $rGenDir `
+      -A "installer-mobile\assets" `
+      -I "$platform\android.jar" --min-sdk-version 30 --target-sdk-version 34
+
+    # Compile Java sources against the exact R.java
+    $javaFiles = @(
+        "installer-mobile\src\com\galaxy\installer\CookerEngine.java",
+        "installer-mobile\src\com\galaxy\installer\InstallerActivity.java",
+        "installer-mobile\src\com\galaxy\installer\GalaxyFileProvider.java",
+        "installer-mobile\src\com\galaxy\installer\AppInstaller.java",
+        "$rGenDir\com\galaxy\installer\R.java"
+    )
+    & javac -source 17 -target 17 -cp "$platform\android.jar" -d $objDir $javaFiles
+
+    $classFiles = Get-ChildItem -Recurse $objDir -Filter "*.class" | ForEach-Object { $_.FullName }
+    & "$bt\d8.bat" --min-api 26 --output $dexDir $classFiles
+
+    # Add classes.dex and native libs to base.apk
+    $pyCode = @"
+import zipfile, os
+z = zipfile.ZipFile('$out/base.apk'.replace('\\', '/'), 'a', zipfile.ZIP_DEFLATED)
+# Add classes.dex
+z.write('$dexDir/classes.dex'.replace('\\', '/'), 'classes.dex')
+# Add native libs
+for root, _, files in os.walk('$out/apk/lib'.replace('\\', '/')):
+    for f in files:
+        full_p = os.path.join(root, f)
+        rel_p = os.path.relpath(full_p, '$out/apk'.replace('\\', '/')).replace('\\', '/')
+        z.write(full_p, rel_p)
+z.close()
+"@
+    & $python -c $pyCode
+
+    # 16KB page alignment
+    & "$bt\zipalign.exe" -f -p 16 "$out\base.apk" "$out\aligned.apk"
+
+    # Sign APK
+    cmd.exe /c "`"$bt\apksigner.bat`" sign --ks `"$keystore`" --ks-pass pass:android --key-pass pass:android --out `"$OutApk`" `"$out\aligned.apk`""
+
+    Remove-Item "$out\base.apk" -Force
+    Remove-Item "$out\aligned.apk" -Force
+
+    $apkInfo = Get-Item $OutApk
+    Write-Host "Successfully packaged ${Label}: $OutApk ($($apkInfo.Length) bytes)"
+}
+
 # 1. Build GalaxyMobile+ first (so installer-mobile\assets doesn't bundle itself)
 Build-ApkFlavor -Manifest "platform\mobile\AndroidManifest_plus.xml" -OutApk "$out\GalaxyMobilePlus.apk" -Label "GalaxyMobile+ (Mods Enabled)"
 
@@ -138,4 +219,4 @@ if (Test-Path "installer-mobile\assets\GalaxyMobilePlus.apk") {
 
 if (Test-Path "$out\res_platform.zip") { Remove-Item "$out\res_platform.zip" -Force }
 if (Test-Path "$out\res_installer.zip") { Remove-Item "$out\res_installer.zip" -Force }
-Write-Host "=== Both APKs built and signed successfully! ==="
+Write-Host "=== GalaxyAndroid.apk built and signed successfully! ==="

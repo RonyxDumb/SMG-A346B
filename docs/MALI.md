@@ -52,9 +52,8 @@ screenshot.
 
 ## Renderer switches without a rebuild
 
-Create `Android/data/com.galaxy.mobile/files/gpu_options.txt` (for
-GalaxyMobile+: `com.galaxy.mobile.plus`) with `NAME=VALUE` lines; they are
-applied at the next start.
+Create `Android/data/com.galaxy.mobile/files/gpu_options.txt` with
+`NAME=VALUE` lines; they are applied at the next start.
 
 | Line | Effect |
 |---|---|
@@ -67,7 +66,7 @@ applied at the next start.
 
 ## Test builds
 
-Every push builds both APKs with GitHub Actions
+Every push builds the universal `GalaxyAndroid.apk` with GitHub Actions
 (`.github/workflows/android-apk.yml`):
 
 - the run's **Artifacts** (Actions tab > Build Android APKs > a run), or
@@ -80,7 +79,7 @@ GalaxyMobile signed with another key: that one has to be uninstalled first,
 **which deletes its save files** (they are in the app's private storage; the
 game data in `/sdcard` stays).  From then on CI builds update each other.
 
-To build locally on Linux: `tools/ci/build_apks.sh` (needs `ANDROID_HOME`,
+To build locally on Linux: `tools/ci/build_apks.sh` (writes `out-mobile/GalaxyAndroid.apk`) (needs `ANDROID_HOME`,
 `ANDROID_NDK_HOME`, a JDK 17+, cmake, ninja, python3).
 `tools/ci/shadergen_check.sh` runs a spread of generated shaders through the
 NDK's `glslc`.

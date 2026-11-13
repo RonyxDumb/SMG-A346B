@@ -1,7 +1,7 @@
-name: Build Android APKs
+name: Build Galaxy Android APK
 
-# Builds GalaxyMobile.apk / GalaxyMobilePlus.apk on every push, so each step
-# of the work is testable on a phone: download them from the run's
+# Builds GalaxyAndroid.apk on every push, so each step of the work is
+# testable on a phone: download them from the run's
 # "Artifacts" (or from the rolling pre-release of the branch).
 on:
   push:
@@ -50,7 +50,7 @@ jobs:
       - name: Check the shader generator
         run: tools/ci/shadergen_check.sh
 
-      - name: Build and package the APKs
+      - name: Build and package the APK
         run: tools/ci/build_apks.sh
 
       - name: Name the build
@@ -61,10 +61,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GalaxyMobile-${{ steps.meta.outputs.branch }}-${{ steps.meta.outputs.sha }}
-          path: |
-            out-mobile/GalaxyMobile.apk
-            out-mobile/GalaxyMobilePlus.apk
+          name: GalaxyAndroid-${{ steps.meta.outputs.branch }}-${{ steps.meta.outputs.sha }}
+          path: out-mobile/GalaxyAndroid.apk
           if-no-files-found: error
           compression-level: 0
 
@@ -81,4 +79,4 @@ jobs:
           Signed with the CI debug key, not the original author's: Android refuses to install it over a GalaxyMobile from another source. Uninstalling that one deletes its save files (they live in the app's private storage); the game data in /sdcard stays."
           gh release delete "$TAG" --yes --cleanup-tag 2> /dev/null || true
           gh release create "$TAG" --prerelease --target "$GITHUB_SHA" --title "Latest build: ${GITHUB_REF_NAME} (${{ steps.meta.outputs.sha }})" --notes "$NOTES" \
-            out-mobile/GalaxyMobile.apk out-mobile/GalaxyMobilePlus.apk
+            out-mobile/GalaxyAndroid.apk

@@ -28,7 +28,6 @@ smg_*.png
 out-mobile/apk/
 *.apk
 !out-mobile/GalaxyMobile.apk
-!out-mobile/GalaxyMobilePlus.apk
 !out-mobile/GalaxyInstaller.apk
 
 
