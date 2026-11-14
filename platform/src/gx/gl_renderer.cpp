@@ -2582,7 +2582,7 @@ void Renderer::Impl::execute(EfbTarget& efb, const EyeView* eye, EfbTarget* hud,
             if (tr & 0x80000000u) {
                 auto cit = copies.find(copyKey(copySlot, (tr & 0x7FFFFFFF) << 5));
                 if (cit != copies.end()) {
-                    cit->second.frame = cur->number;  // in use: not evicted
+                    cit->second.frame = this->cur->number;  // in use: not evicted
                 }
                 bindTexture(u, cit != copies.end() ? cit->second.tex : 0, sampler(it.texMode0[u], it.texMode1[u], 1));
             } else if (tr < textures.size()) {
