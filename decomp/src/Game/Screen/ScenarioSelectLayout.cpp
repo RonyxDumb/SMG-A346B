@@ -212,10 +212,12 @@ void ScenarioSelectLayout::appear() {
     mScenarioSky->mTranslation.set(::cSkyTrans);
     mScenarioSky->mScale.set(::cSkyScale);
 #ifdef TARGET_PC
-    // The sky is a backdrop sized for the game's 16:9 view: on a wider
-    // screen it grows with the view, so no black shows beside it.
+    // The sky is a curved backdrop sized for the game's 16:9 view: on a
+    // wider screen it is stretched sideways by as much as the view is wider
+    // (only sideways: its edges then project exactly as far out as on 16:9,
+    // whatever its curve, which a scale of all three axes does not do).
     if (MR::getScreenWidth() > 832) {
-        mScenarioSky->mScale.set(::cSkyScale * MR::getScreenWidth() / 832.0f);
+        mScenarioSky->mScale.x = ::cSkyScale * 1.08f * MR::getScreenWidth() / 832.0f;  // and a little to spare
     }
 #endif
     mScenarioSky->appear();
