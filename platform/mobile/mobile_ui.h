@@ -13,6 +13,11 @@ struct Settings {
     bool fullscreen = false;
     bool showCameraCutout = true;
     int languageIndex = 0;
+    // The language screen comes up at the next start (the first one, and
+    // again whenever the player asks for it in the settings).
+    bool askLanguage = true;
+    // The game's Wii Remote strap reminder at its start.
+    bool showStrapScreen = true;
     int playerCharacter = 0;
     float opacity = 0.65f;
     float scale = 1.0f;
@@ -81,6 +86,8 @@ public:
     int availableLanguageCount() const { return mLangCount; }
     // Picks the disc's only language without showing the picker.
     void pickOnlyLanguage();
+    // Starts with the saved language, without showing the picker.
+    void useSavedLanguage();
     // A gamepad key while the picker is up: dx/dy move the selection,
     // confirm picks it.  Returns true when consumed.
     bool pickerKey(int dx, int dy, bool confirm);
@@ -96,14 +103,16 @@ private:
 
     // Language picker
     bool mPickerActive = false;
-    int mPickerSel = 0;  // a slot of mLangList
+    int mPickerSel = 0;  // a slot of mLangList; mLangCount: the strap switch (gamepad)
+    int mPickerLastLang = 0;  // the slot the selection left for the switch
     int mLangList[8] = {0, 1, 2, 3, 4, 5, 6, 7};  // the languages offered
     int mLangCount = 7;
     int languageSlot(int language) const;
     // The language under a point of the settings' language slider.
     int sliderLanguageAt(float t) const;
     bool pickerTouch(const AInputEvent* event, int screenW, int screenH);
-    void pickLanguage(int index);
+    void pickLanguage(int index, bool fromPicker = true);
+    void setShowStrapScreen(bool show);
 
     // UI state
     bool mSettingsOpen = false;
@@ -137,6 +146,8 @@ private:
     float mSwAnimShowDpad = 1.0f;
     float mSwAnimFullscreen = 0.0f;
     float mSwAnimCameraCutout = 1.0f;
+    float mSwAnimStrapScreen = 1.0f;
+    float mSwAnimAskLanguage = 1.0f;
     bool mDraggingLanguageSlider = false;
     float mSwAnimHdUi = 1.0f;
     float mSwAnimSkipCutscenes = 0.0f;

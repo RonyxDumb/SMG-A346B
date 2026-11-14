@@ -331,6 +331,8 @@ void Settings::load(const std::string& path) {
             else if (!strcmp(key, "mod_flight_everywhere")) modFlightEverywhere = (val > 0.5f);
             else if (!strcmp(key, "show_camera_cutout")) showCameraCutout = (val > 0.5f);
             else if (!strcmp(key, "language_index")) languageIndex = std::max(0, std::min(PORT_GAME_LANGUAGE_COUNT - 1, (int)(val + 0.5f)));
+            else if (!strcmp(key, "ask_language")) askLanguage = (val > 0.5f);
+            else if (!strcmp(key, "show_strap_screen")) showStrapScreen = (val > 0.5f);
             else if (!strcmp(key, "player_character")) playerCharacter = (val > 0.5f) ? 1 : 0;
             else if (!strcmp(key, "settings_version")) settingsVersion = (int)val;
         }
@@ -372,6 +374,8 @@ void Settings::save(const std::string& path) const {
     fprintf(f, "mod_flight_everywhere=%d\n", modFlightEverywhere ? 1 : 0);
     fprintf(f, "show_camera_cutout=%d\n", showCameraCutout ? 1 : 0);
     fprintf(f, "language_index=%d\n", languageIndex);
+    fprintf(f, "ask_language=%d\n", askLanguage ? 1 : 0);
+    fprintf(f, "show_strap_screen=%d\n", showStrapScreen ? 1 : 0);
     fprintf(f, "player_character=%d\n", playerCharacter);
     fprintf(f, "settings_version=%d\n", 2);
     fclose(f);
@@ -418,6 +422,9 @@ void UIOverlay::setSavePath(const std::string& path) {
     mSwAnimCameraCutout = mSettings.showCameraCutout ? 1.0f : 0.0f;
     port_set_camera_cutout(mSettings.showCameraCutout ? 1 : 0);
     port_set_game_language(mSettings.languageIndex);
+    mSwAnimStrapScreen = mSettings.showStrapScreen ? 1.0f : 0.0f;
+    mSwAnimAskLanguage = mSettings.askLanguage ? 1.0f : 0.0f;
+    port_set_show_strap_screen(mSettings.showStrapScreen ? 1 : 0);
     if (mPlusEdition) {
         port_set_player_character(mSettings.playerCharacter);
     }
@@ -456,6 +463,8 @@ bool UIOverlay::needsRedraw() {
         switchActive(mSwAnimShowDpad, mSettings.showDpad) ||
         switchActive(mSwAnimFullscreen, mSettings.fullscreen) ||
         switchActive(mSwAnimCameraCutout, mSettings.showCameraCutout) ||
+        switchActive(mSwAnimStrapScreen, mSettings.showStrapScreen) ||
+        switchActive(mSwAnimAskLanguage, mSettings.askLanguage) ||
         switchActive(mSwAnimHdUi, mSettings.hdUiTextures) ||
         switchActive(mSwAnimSkipCutscenes, mSettings.modSkipCutscenes) ||
         switchActive(mSwAnimInfiniteHp, mSettings.modInfiniteHealth) ||
@@ -499,6 +508,16 @@ void pickerRect(int slot, int count, float w, float h, float ui, float* x0, floa
     *y1 = *y0 + bh;
 }
 
+// The strap reminder's switch row, under the language buttons.
+void pickerSwitchRect(int count, float w, float h, float ui, float* x0, float* y0, float* x1, float* y1) {
+    int rows = count > pickerFirstRow(count) ? 2 : 1;
+    float rowW = std::min(w * 0.62f, 560.0f * ui);
+    *x0 = (w - rowW) * 0.5f;
+    *y0 = h * 0.42f + rows * (74.0f + 16.0f) * ui + 10.0f * ui;
+    *x1 = *x0 + rowW;
+    *y1 = *y0 + 58.0f * ui;
+}
+
 }  // namespace
 
 int UIOverlay::languageSlot(int language) const {
@@ -535,7 +554,17 @@ void UIOverlay::setAvailableLanguages(unsigned mask) {
 }
 
 void UIOverlay::pickOnlyLanguage() {
-    pickLanguage(0);
+    pickLanguage(0, false);
+}
+
+void UIOverlay::useSavedLanguage() {
+    pickLanguage(languageSlot(mSettings.languageIndex), false);
+}
+
+void UIOverlay::setShowStrapScreen(bool show) {
+    mSettings.showStrapScreen = show;
+    port_set_show_strap_screen(show ? 1 : 0);
+    mDirty = true;
 }
 
 void UIOverlay::startLanguagePicker() {
@@ -545,11 +574,17 @@ void UIOverlay::startLanguagePicker() {
 }
 
 // `slot`: a button of the picker (mLangList).
-void UIOverlay::pickLanguage(int slot) {
+// `fromPicker`: the player chose it on the language screen, which then stays
+// away at the next starts (until asked for in the settings).
+void UIOverlay::pickLanguage(int slot, bool fromPicker) {
     slot = std::max(0, std::min(mLangCount - 1, slot));
     int index = mLangList[slot];
     mSettings.languageIndex = index;
     port_set_game_language(index);
+    if (fromPicker) {
+        mSettings.askLanguage = false;
+        mSwAnimAskLanguage = 0.0f;
+    }
     if (!mSavePath.empty()) {
         mSettings.save(mSavePath);
     }
@@ -560,14 +595,33 @@ void UIOverlay::pickLanguage(int slot) {
 
 bool UIOverlay::pickerKey(int dx, int dy, bool confirm) {
     if (!mPickerActive) return false;
+    bool onSwitch = mPickerSel >= mLangCount;  // the strap reminder's switch
     if (confirm) {
-        pickLanguage(mPickerSel);
+        if (onSwitch) {
+            setShowStrapScreen(!mSettings.showStrapScreen);
+        } else {
+            pickLanguage(mPickerSel);
+        }
+        return true;
+    }
+    if (onSwitch) {
+        if (dy < 0) {
+            mPickerSel = std::max(0, std::min(mLangCount - 1, mPickerLastLang));
+            mDirty = true;
+        }
         return true;
     }
     int first = pickerFirstRow(mLangCount);
     int rows = mLangCount > first ? 2 : 1;
     int row = mPickerSel < first ? 0 : 1;
     int col = mPickerSel < first ? mPickerSel : mPickerSel - first;
+    if (dy > 0 && row == rows - 1) {
+        // Down from the last row of languages: the switch under them.
+        mPickerLastLang = mPickerSel;
+        mPickerSel = mLangCount;
+        mDirty = true;
+        return true;
+    }
     if (dy) row = std::max(0, std::min(rows - 1, row + dy));
     col += dx;
     int inRow = row == 0 ? first : mLangCount - first;
@@ -588,6 +642,17 @@ bool UIOverlay::pickerTouch(const AInputEvent* event, int screenW, int screenH) 
         float x0, y0, x1, y1;
         pickerRect(i, mLangCount, (float)screenW, (float)screenH, ui, &x0, &y0, &x1, &y1);
         if (px >= x0 && px <= x1 && py >= y0 && py <= y1) hit = i;
+    }
+    {
+        float x0, y0, x1, y1;
+        pickerSwitchRect(mLangCount, (float)screenW, (float)screenH, ui, &x0, &y0, &x1, &y1);
+        if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+            if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_POINTER_UP) {
+                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+                setShowStrapScreen(!mSettings.showStrapScreen);
+            }
+            return true;
+        }
     }
     if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN || action == AMOTION_EVENT_ACTION_MOVE) {
         if (hit >= 0 && hit != mPickerSel) {
@@ -867,7 +932,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
         } else if (mSettingsTab == 1) {
             totalContentH = 150.0f * uiScale;
         } else if (mSettingsTab == 2) {
-            totalContentH = mPlusEdition ? (1176.0f * uiScale) : (446.0f * uiScale);
+            totalContentH = mPlusEdition ? (1320.0f * uiScale) : (590.0f * uiScale);
         } else {
             totalContentH = 780.0f * uiScale;
         }
@@ -1262,6 +1327,16 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
                                 port_share_log();
                                 mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                             }
+                            // Start-up card (1164..1300): language screen at the next start
+                            else if (contentRelY >= 1190.0f * uiScale && contentRelY <= 1238.0f * uiScale) {
+                                mSettings.askLanguage = !mSettings.askLanguage;
+                                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+                            }
+                            // Start-up card: strap reminder
+                            else if (contentRelY >= 1240.0f * uiScale && contentRelY <= 1292.0f * uiScale) {
+                                setShowStrapScreen(!mSettings.showStrapScreen);
+                                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+                            }
                         } else {
                             // Vanilla System Tab items
                             // Open Installer Button (Card 1: 80..126)
@@ -1277,6 +1352,16 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
                             // Debug & Diagnostics Card (324..440)
                             else if (contentRelY >= 324.0f * uiScale && contentRelY <= 440.0f * uiScale) {
                                 port_share_log();
+                                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+                            }
+                            // Start-up card (448..584): language screen at the next start
+                            else if (contentRelY >= 474.0f * uiScale && contentRelY <= 522.0f * uiScale) {
+                                mSettings.askLanguage = !mSettings.askLanguage;
+                                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+                            }
+                            // Start-up card: strap reminder
+                            else if (contentRelY >= 524.0f * uiScale && contentRelY <= 576.0f * uiScale) {
+                                setShowStrapScreen(!mSettings.showStrapScreen);
                                 mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                             }
                         }
@@ -1725,6 +1810,8 @@ void UIOverlay::render(int screenW, int screenH) {
     updateSwAnim(mSwAnimShowDpad, mSettings.showDpad);
     updateSwAnim(mSwAnimFullscreen, mSettings.fullscreen);
     updateSwAnim(mSwAnimCameraCutout, mSettings.showCameraCutout);
+    updateSwAnim(mSwAnimStrapScreen, mSettings.showStrapScreen);
+    updateSwAnim(mSwAnimAskLanguage, mSettings.askLanguage);
     updateSwAnim(mSwAnimHdUi, mSettings.hdUiTextures);
     updateSwAnim(mSwAnimSkipCutscenes, mSettings.modSkipCutscenes);
     updateSwAnim(mSwAnimInfiniteHp, mSettings.modInfiniteHealth);
@@ -2207,7 +2294,7 @@ void UIOverlay::render(int screenW, int screenH) {
         } else if (mSettingsTab == 1) {
             totalContentH = 150.0f * uiScale;
         } else if (mSettingsTab == 2) {
-            totalContentH = mPlusEdition ? (1176.0f * uiScale) : (446.0f * uiScale);
+            totalContentH = mPlusEdition ? (1320.0f * uiScale) : (590.0f * uiScale);
         } else {
             totalContentH = 780.0f * uiScale;
         }
@@ -2515,6 +2602,25 @@ void UIOverlay::render(int screenW, int screenH) {
                 const char* const* kLangNames = kPickerLangNames;
                 const char* const* kLangCodes = kPickerLangCodes;
 
+                auto drawStartupCard = [&](float y) {
+                    drawCard(cX0, y, cX1, y + 136.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
+
+                    drawCircle(cX0 + 16.0f * uiScale, y + 20.0f * uiScale, 4.0f * uiScale, cHeader);
+                    drawText("START-UP", cX0 + 26.0f * uiScale, y + 23.0f * uiScale, 0.32f * uiScale, cHeader, 0);
+
+                    float r1Y = y + 34.0f * uiScale;
+                    drawText("Choose Language at Next Start", cX0 + 14.0f * uiScale, r1Y + 18.0f * uiScale, 0.38f * uiScale, cTextPrimary, 0);
+                    drawText("Show the language screen once more", cX0 + 14.0f * uiScale, r1Y + 34.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
+                    drawM3Switch(cX1 - swW - 14.0f * uiScale, r1Y + 8.0f * uiScale, swW, swH, mSwAnimAskLanguage);
+
+                    drawRoundRect(cX0 + 14.0f * uiScale, y + 80.0f * uiScale, cX1 - 14.0f * uiScale, y + 81.0f * uiScale, 0.5f, cDivider);
+
+                    float r2Y = y + 82.0f * uiScale;
+                    drawText("Wii Remote Strap Screen", cX0 + 14.0f * uiScale, r2Y + 18.0f * uiScale, 0.38f * uiScale, cTextPrimary, 0);
+                    drawText("Show the safety reminder when the game starts", cX0 + 14.0f * uiScale, r2Y + 34.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
+                    drawM3Switch(cX1 - swW - 14.0f * uiScale, r2Y + 8.0f * uiScale, swW, swH, mSwAnimStrapScreen);
+                };
+
                 auto drawLanguageSliderCard = [&](float y) {
                     drawCard(cX0, y, cX1, y + 96.0f * uiScale, 18.0f * uiScale, cCardBg, cCardBorder);
 
@@ -2739,6 +2845,9 @@ void UIOverlay::render(int screenW, int screenH) {
                         drawRoundRect(cX0 + 14.0f * uiScale, btnY, cX1 - 14.0f * uiScale, btnY + btnH, 16.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 0.95f));
                         drawText("SAVE DEBUG LOG", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
                     });
+
+                    // Card: Start-up (the language screen and the strap reminder)
+                    renderCardBlock(1164.0f * uiScale, 136.0f * uiScale, drawStartupCard);
                 } else {
                     // Vanilla Edition System Tab
                     // Card 1: Game Storage & Cooker Setup
@@ -2780,7 +2889,7 @@ void UIOverlay::render(int screenW, int screenH) {
 
                         drawStatusChip(cX0 + 16.0f * uiScale, y + 14.0f * uiScale, "Galaxy Android v0.8.0", rgba(0.10f, 0.28f, 0.44f, 0.90f), rgba(0.40f, 0.85f, 1.0f, 1.0f), cHeader);
                         drawText("by RonyxDumb - Native ARM64 - OpenGL ES 3.2", cX0 + 16.0f * uiScale, y + 54.0f * uiScale, 0.27f * uiScale, cTextSecondary, 0);
-                        drawText("The game language is chosen at start-up.", cX0 + 16.0f * uiScale, y + 68.0f * uiScale, 0.24f * uiScale, cTextSecondary, 0);
+                        drawText("Language: asked at the first start (see Start-up below).", cX0 + 16.0f * uiScale, y + 68.0f * uiScale, 0.24f * uiScale, cTextSecondary, 0);
                     });
 
                     // Card 6: Debug & Diagnostics
@@ -2796,6 +2905,9 @@ void UIOverlay::render(int screenW, int screenH) {
                         drawRoundRect(cX0 + 14.0f * uiScale, btnY, cX1 - 14.0f * uiScale, btnY + btnH, 16.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 0.95f));
                         drawText("SAVE DEBUG LOG", (cX0 + cX1) * 0.5f, btnY + 28.0f * uiScale, 0.33f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
                     });
+
+                    // Card: Start-up (the language screen and the strap reminder)
+                    renderCardBlock(448.0f * uiScale, 136.0f * uiScale, drawStartupCard);
                 }
             } else if (mSettingsTab == 3) {
                 // -------------------------------------------------------------
@@ -3069,8 +3181,23 @@ void UIOverlay::render(int screenW, int screenH) {
             drawText(kPickerLangCodes[lang], (x0 + x1) * 0.5f, y0 + 60.0f * uiScale, 0.28f * uiScale,
                      sel ? rgba(0.85f, 0.92f, 1.0f, 1.0f) : rgba(0.55f, 0.60f, 0.70f, 1.0f), 1);
         }
-        drawText("Tap a language to start  -  or D-pad and A on a controller", w * 0.5f, h - 34.0f * uiScale, 0.28f * uiScale,
+        {
+            // The game's strap reminder at its start, on or off.
+            float x0, y0, x1, y1;
+            pickerSwitchRect(mLangCount, w, h, uiScale, &x0, &y0, &x1, &y1);
+            bool focus = mPickerSel >= mLangCount;
+            if (focus) drawRoundRect(x0 - 2.0f * uiScale, y0 - 2.0f * uiScale, x1 + 2.0f * uiScale, y1 + 2.0f * uiScale, 20.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 1.0f));
+            drawRoundRect(x0, y0, x1, y1, 18.0f * uiScale, rgba(0.141f, 0.153f, 0.200f, 1.0f));
+            drawText("Wii Remote strap screen", x0 + 18.0f * uiScale, y0 + 25.0f * uiScale, 0.38f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 0);
+            drawText("Show the safety reminder when the game starts", x0 + 18.0f * uiScale, y0 + 44.0f * uiScale, 0.27f * uiScale,
+                     rgba(0.62f, 0.68f, 0.80f, 1.0f), 0);
+            float pSwW = 50.0f * uiScale, pSwH = 28.0f * uiScale;
+            drawM3Switch(x1 - pSwW - 16.0f * uiScale, (y0 + y1) * 0.5f - pSwH * 0.5f, pSwW, pSwH, mSwAnimStrapScreen);
+        }
+        drawText("Tap a language to start  -  or D-pad and A on a controller", w * 0.5f, h - 52.0f * uiScale, 0.28f * uiScale,
                  rgba(0.50f, 0.55f, 0.65f, 1.0f), 1);
+        drawText("Asked this once: Settings > System brings this screen back", w * 0.5f, h - 30.0f * uiScale, 0.26f * uiScale,
+                 rgba(0.42f, 0.47f, 0.57f, 1.0f), 1);
     }
 
     if (verts.empty()) return;

@@ -235,6 +235,16 @@ extern "C" int port_get_game_language(void) {
     return sGameLanguageIndex;
 }
 
+static int sShowStrapScreen = 1;
+
+extern "C" void port_set_show_strap_screen(int show) {
+    sShowStrapScreen = show ? 1 : 0;
+}
+
+extern "C" int port_get_show_strap_screen(void) {
+    return sShowStrapScreen;
+}
+
 extern "C" int port_take_language_change_request(int* outLangIndex) {
     int req = sPendingLangChange;
     if (req >= 0) {

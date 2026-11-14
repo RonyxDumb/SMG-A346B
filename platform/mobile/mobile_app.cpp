@@ -144,7 +144,13 @@ void offerDiscLanguages(MobileApp& a) {
     LOGI("Disc languages mask: 0x%x", mask);
     mobile_ui::get().setAvailableLanguages(mask);
     if (mobile_ui::get().availableLanguageCount() > 1) {
-        mobile_ui::get().startLanguagePicker();
+        // Asked at the first start; afterwards the game starts at once in
+        // the saved language, until the player asks for the screen again.
+        if (mobile_ui::get().settings().askLanguage) {
+            mobile_ui::get().startLanguagePicker();
+        } else {
+            mobile_ui::get().useSavedLanguage();
+        }
     } else {
         mobile_ui::get().pickOnlyLanguage();
     }

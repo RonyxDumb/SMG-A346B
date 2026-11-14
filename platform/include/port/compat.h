@@ -207,6 +207,9 @@ void port_install_plus(void);
 unsigned port_dvd_language_mask(const char* root);
 void port_set_game_language(int index);
 int port_get_game_language(void);
+// The Wii Remote strap reminder at the game's start: shown (default) or not.
+void port_set_show_strap_screen(int show);
+int port_get_show_strap_screen(void);
 int port_take_language_change_request(int* outLangIndex);
 void port_set_camera_cutout(int show);
 int port_get_camera_cutout(void);

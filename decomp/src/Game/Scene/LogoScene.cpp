@@ -55,7 +55,15 @@ LogoScene::~LogoScene() {
 void LogoScene::init() {
     if (MR::isEqualString(MR::getCurrentRegionPrefix(), "Cn")) {
         initNerve(GET_NERVE_ANON(LogoSceneCensorshipFadein));
-    } else {
+    }
+#ifdef TARGET_PC
+    // The strap reminder turned off in the port's settings: straight on to
+    // what follows it (the screen stays blank, as after its fade out).
+    else if (!port_get_show_strap_screen()) {
+        initNerve(GET_NERVE_ANON(LogoSceneWaitReadDoneSystemArchive));
+    }
+#endif
+    else {
         initNerve(GET_NERVE_ANON(LogoSceneStrapFadein));
     }
 
@@ -142,6 +150,12 @@ void LogoScene::exeCensorshipFadeout() {
     mIsbnManager->calc(true);
 
     if (tryFadeoutLayout()) {
+#ifdef TARGET_PC
+        if (!port_get_show_strap_screen()) {
+            setNerve(GET_NERVE_ANON(LogoSceneWaitReadDoneSystemArchive));
+            return;
+        }
+#endif
         setNerve(GET_NERVE_ANON(LogoSceneStrapFadein));
     }
 }
