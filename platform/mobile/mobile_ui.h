@@ -3,6 +3,7 @@
 #include <android/input.h>
 #include <stdint.h>
 #include <string>
+#include <vector>
 #include "port/input.h"
 #include "port/net.h"
 
@@ -10,14 +11,18 @@ namespace mobile_ui {
 
 struct Settings {
     bool showControls = true;
-    bool fullscreen = false;
+    bool fullscreen = true;  // the whole display, always (the Wii's 16:9 pillar is not offered)
     bool showCameraCutout = true;
     int languageIndex = 0;
     // The language screen comes up at the next start (the first one, and
     // again whenever the player asks for it in the settings).
     bool askLanguage = true;
     // The game's Wii Remote strap reminder at its start.
-    bool showStrapScreen = true;
+    bool showStrapScreen = false;
+    // The Wii Remote's rumble, as soft vibration of the phone.
+    bool vibration = true;
+    // The touch controls go away while a game controller is connected.
+    bool hideWithController = true;
     int playerCharacter = 0;
     float opacity = 0.65f;
     float scale = 1.0f;
@@ -45,7 +50,7 @@ struct Settings {
     bool modAdvancedHaptics = false;
     bool modFlightEverywhere = false;
 
-    int settingsVersion = 0;  // 2: fixed thumbstick default applied
+    int settingsVersion = 0;  // 2: fixed thumbstick default applied; 3: whole display
 
     void load(const std::string& path);
     void save(const std::string& path) const;
@@ -74,6 +79,10 @@ public:
     Settings& settings() { return mSettings; }
     void setPlusEdition(bool plus) { mPlusEdition = plus; }
     bool isPlusEdition() const { return mPlusEdition; }
+    // A game controller is connected (the touch controls then hide, unless
+    // the player keeps them).
+    void setGamepadConnected(bool connected);
+    bool controlsVisible() const { return mSettings.showControls && !(mSettings.hideWithController && mGamepadConnected); }
 
     // Start-up language screen: shown before the game boots; the game starts
     // once a language is picked (touch, or D-pad / stick + A on a gamepad).
@@ -100,6 +109,7 @@ private:
     bool mPlusEdition = false;
     bool mInitialized = false;
     bool mDirty = false;
+    bool mGamepadConnected = false;
 
     // Language picker
     bool mPickerActive = false;
@@ -113,6 +123,25 @@ private:
     bool pickerTouch(const AInputEvent* event, int screenW, int screenH);
     void pickLanguage(int index, bool fromPicker = true);
     void setShowStrapScreen(bool show);
+
+    // The settings menu (standard edition): a starry panel of rows, laid out
+    // once for drawing and for touches alike.
+    struct MenuRow {
+        int kind;  // section heading, switch, segmented choice, buttons, note
+        int id;
+        const char* label;
+        const char* options[4];
+        int optionCount;
+        float y, h;  // within the content, at scroll 0 (pixels)
+    };
+    void menuRows(std::vector<MenuRow>& rows, float ui) const;
+    int menuValue(int id) const;
+    void menuAct(int id, int option);
+    bool menuTouch(const AInputEvent* event, int screenW, int screenH);
+    int mMenuTab = 0;
+    int mMenuPressRow = -1;  // the row under the finger
+    int mMenuPressOption = 0;
+    float mMenuAnim[24] = {};  // switch knobs, by row id
 
     // UI state
     bool mSettingsOpen = false;

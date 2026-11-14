@@ -37,10 +37,22 @@ static JNIEnv* getEnv() {
     return env;
 }
 
+// The touch controls' own clicks and ticks (Plus edition's option).
 static bool isEnabled() {
     return mobile_ui::UIOverlay::get().isPlusEdition() &&
            mobile_ui::UIOverlay::get().settings().modAdvancedHaptics;
 }
+
+// The game's Wii Remote rumble on the phone.
+static bool isRumbleEnabled() {
+    return isEnabled() || (!mobile_ui::UIOverlay::get().isPlusEdition() && mobile_ui::UIOverlay::get().settings().vibration);
+}
+
+// The rumble is meant to go with the game, not to shake the phone: a soft
+// start and a softer hold where the motor's strength can be set, sparse
+// short pulses where it cannot (such a motor only runs at full strength).
+static bool sHasAmplitude = false;
+static const int kRumbleStartAmp = 70, kRumbleHoldAmp = 45;  // of 255
 
 static void vibrateOneShotInternal(JNIEnv* env, int durationMs, int amplitude) {
     if (!sVibratorGlobalRef) return;
@@ -148,6 +160,16 @@ void init(JavaVM* vm, jobject activity) {
 
             sVibrateEffectMethod = env->GetMethodID(vibratorClass, "vibrate", "(Landroid/os/VibrationEffect;)V");
             if (env->ExceptionCheck()) env->ExceptionClear();
+
+            jmethodID hasAmp = env->GetMethodID(vibratorClass, "hasAmplitudeControl", "()Z");
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            if (hasAmp) {
+                sHasAmplitude = env->CallBooleanMethod(sVibratorGlobalRef, hasAmp) == JNI_TRUE;
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    sHasAmplitude = false;
+                }
+            }
         } else if (env->ExceptionCheck()) {
             env->ExceptionClear();
         }
@@ -202,7 +224,7 @@ void trigger(HapticType type) {
 }
 
 void updateRumble(int rumbleActive) {
-    if (!sInitialized || !isEnabled()) {
+    if (!sInitialized || !isRumbleEnabled()) {
         if (sLastRumble) {
             std::lock_guard<std::mutex> lock(sHapticMutex);
             JNIEnv* env = getEnv();
@@ -220,8 +242,12 @@ void updateRumble(int rumbleActive) {
 
     if (rumbleActive != sLastRumble) {
         if (rumbleActive) {
-            // Rumble engaged: start continuous pulse
-            vibrateOneShotInternal(env, 180, 230);
+            // Rumble engaged
+            if (sHasAmplitude) {
+                vibrateOneShotInternal(env, 110, kRumbleStartAmp);
+            } else {
+                vibrateOneShotInternal(env, 12, 255);
+            }
             sLastRumbleTime = now;
         } else {
             // Rumble disengaged: stop immediately
@@ -231,8 +257,13 @@ void updateRumble(int rumbleActive) {
     } else if (rumbleActive) {
         // Keep renewing vibration while rumble motor remains active
         auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - sLastRumbleTime).count();
-        if (elapsedMs >= 90) {
-            vibrateOneShotInternal(env, 140, 230);
+        if (sHasAmplitude) {
+            if (elapsedMs >= 90) {
+                vibrateOneShotInternal(env, 130, kRumbleHoldAmp);
+                sLastRumbleTime = now;
+            }
+        } else if (elapsedMs >= 85) {
+            vibrateOneShotInternal(env, 10, 255);
             sLastRumbleTime = now;
         }
     }

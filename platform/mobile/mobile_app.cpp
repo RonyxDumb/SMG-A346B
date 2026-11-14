@@ -76,6 +76,8 @@ struct MobileApp {
     int camRepeatLeft = 0;
     int camRepeatRight = 0;
     int32_t lastGamepadDeviceId = -1;
+    int64_t backPauseUntilNs = 0;  // the Back key holds Plus (pause) until then
+    int64_t lastGamepadPollNs = 0;
     bool gamepadHasRxRy = false;
     bool gamepadZIsTrigger = false;
     bool gamepadSawCenterZ = false;
@@ -191,6 +193,47 @@ std::string findGameData(const std::string& extDir) {
         }
     }
     return "";
+}
+
+// A game controller is connected (Bluetooth or USB): an external input
+// device that is a gamepad or a joystick.
+bool isGameControllerConnected(ANativeActivity* activity) {
+    if (!activity || !activity->vm) return false;
+    JNIEnv* env = nullptr;
+    if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return false;
+    bool found = false;
+    jclass cls = env->FindClass("android/view/InputDevice");
+    if (cls) {
+        jmethodID getIds = env->GetStaticMethodID(cls, "getDeviceIds", "()[I");
+        jmethodID getDev = env->GetStaticMethodID(cls, "getDevice", "(I)Landroid/view/InputDevice;");
+        jmethodID getSources = env->GetMethodID(cls, "getSources", "()I");
+        jmethodID isVirtual = env->GetMethodID(cls, "isVirtual", "()Z");
+        jmethodID isExternal = env->GetMethodID(cls, "isExternal", "()Z");
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (getIds && getDev && getSources && isVirtual && isExternal) {
+            jintArray ids = (jintArray)env->CallStaticObjectMethod(cls, getIds);
+            if (ids && !env->ExceptionCheck()) {
+                jsize n = env->GetArrayLength(ids);
+                jint* v = env->GetIntArrayElements(ids, nullptr);
+                for (jsize i = 0; v && i < n && !found; i++) {
+                    jobject dev = env->CallStaticObjectMethod(cls, getDev, v[i]);
+                    if (!dev) continue;
+                    const jint kGamepad = 0x00000401, kJoystick = 0x01000010;
+                    jint src = env->CallIntMethod(dev, getSources);
+                    bool pad = (src & kGamepad) == kGamepad || (src & kJoystick) == kJoystick;
+                    if (pad && !env->CallBooleanMethod(dev, isVirtual) && env->CallBooleanMethod(dev, isExternal)) {
+                        found = true;
+                    }
+                    env->DeleteLocalRef(dev);
+                }
+                if (v) env->ReleaseIntArrayElements(ids, v, JNI_ABORT);
+            }
+            if (ids) env->DeleteLocalRef(ids);
+        }
+        env->DeleteLocalRef(cls);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return found;
 }
 
 void promptStoragePermissionIfMissing(ANativeActivity* activity) {
@@ -678,6 +721,13 @@ void syncMergedPad(MobileApp& a) {
     }
 
     uint32_t rawButtons = a.touchPad.buttons | a.gamepadKeyButtons | a.gamepadAxisButtons;
+    if (a.backPauseUntilNs != 0) {
+        if (port_host_time_ns() < a.backPauseUntilNs) {
+            rawButtons |= 0x0010;  // Plus: the pause menu
+        } else {
+            a.backPauseUntilNs = 0;
+        }
+    }
     uint32_t nonCamButtons = rawButtons & ~(0x0001u | 0x0002u);
 
     // Right Stick Vertical: Up for First-Person, Down for Center Camera & Exit FP (Camera mode only)
@@ -976,7 +1026,16 @@ int32_t onInput(android_app* app, AInputEvent* event) {
                 }
                 return 1;
             }
-            return 0;
+            if (!a->gameBooted) {
+                return 0;  // nothing to pause yet: Back leaves the app
+            }
+            // Back opens (or closes) the game's pause menu instead of
+            // leaving the game.  Its down and up can come in one frame, so
+            // Plus is held for a moment.
+            if (down && AKeyEvent_getRepeatCount(event) == 0) {
+                a->backPauseUntilNs = port_host_time_ns() + 120000000ll;
+            }
+            return 1;
         default:
             return 0;
         }
@@ -1284,6 +1343,15 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         }
         port_net_update();
         mobile_haptics::updateRumble(port_input_rumble(0));
+
+        // The touch controls step aside while a controller is connected.
+        {
+            int64_t nowNs = port_host_time_ns();
+            if (a.lastGamepadPollNs == 0 || nowNs - a.lastGamepadPollNs > 2000000000ll) {
+                a.lastGamepadPollNs = nowNs;
+                mobile_ui::get().setGamepadConnected(isGameControllerConnected(app->activity));
+            }
+        }
 
 
         // Presentation & Render Loop

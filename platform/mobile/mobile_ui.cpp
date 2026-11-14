@@ -263,6 +263,19 @@ void main() {
         float flashDot = smoothstep(0.05, 0.05 - fw, dFlash);
 
         alpha = max(fillBody * lensHole * (1.0 - flashDot), max(lensRing, lensDot));
+    } else if (mode > 7.5 && mode < 8.5) {
+        // Mode 8: soft glow (a nebula's haze), fading to nothing at the rim
+        float f = clamp(1.0 - length(vUv), 0.0, 1.0);
+        alpha = f * f;
+    } else if (mode > 8.5 && mode < 9.5) {
+        // Mode 9: four-pointed star sparkle
+        vec2 p = abs(vUv);
+        float m = max(p.x, p.y);
+        float d = length(vUv);
+        float core = smoothstep(0.30, 0.0, d);
+        float wdt = 0.11 * (1.0 - m);
+        float ray = smoothstep(wdt, wdt * 0.25, min(p.x, p.y)) * clamp(1.0 - m, 0.0, 1.0);
+        alpha = max(core, ray);
     } else {
         // Mode 0: Rounded rectangle with exact aspect ratio
         if (param > 0.0) {
@@ -333,6 +346,8 @@ void Settings::load(const std::string& path) {
             else if (!strcmp(key, "language_index")) languageIndex = std::max(0, std::min(PORT_GAME_LANGUAGE_COUNT - 1, (int)(val + 0.5f)));
             else if (!strcmp(key, "ask_language")) askLanguage = (val > 0.5f);
             else if (!strcmp(key, "show_strap_screen")) showStrapScreen = (val > 0.5f);
+            else if (!strcmp(key, "vibration")) vibration = (val > 0.5f);
+            else if (!strcmp(key, "hide_with_controller")) hideWithController = (val > 0.5f);
             else if (!strcmp(key, "player_character")) playerCharacter = (val > 0.5f) ? 1 : 0;
             else if (!strcmp(key, "settings_version")) settingsVersion = (int)val;
         }
@@ -343,6 +358,12 @@ void Settings::load(const std::string& path) {
     if (settingsVersion < 2) {
         dynamicStick = false;
         settingsVersion = 2;
+    }
+    // The picture fills the display: the 16:9 pillar older versions
+    // defaulted to is gone, with its switch.
+    if (settingsVersion < 3) {
+        fullscreen = true;
+        settingsVersion = 3;
     }
     LOGI("Loaded settings: show=%d, full=%d, op=%.2f, scale=%.2f, dpad=%d, skip=%d, infHp=%d, infPow=%d, hdUi=%d",
          showControls, fullscreen, opacity, scale, showDpad, modSkipCutscenes, modInfiniteHealth, modInfinitePowerup, hdUiTextures);
@@ -376,8 +397,10 @@ void Settings::save(const std::string& path) const {
     fprintf(f, "language_index=%d\n", languageIndex);
     fprintf(f, "ask_language=%d\n", askLanguage ? 1 : 0);
     fprintf(f, "show_strap_screen=%d\n", showStrapScreen ? 1 : 0);
+    fprintf(f, "vibration=%d\n", vibration ? 1 : 0);
+    fprintf(f, "hide_with_controller=%d\n", hideWithController ? 1 : 0);
     fprintf(f, "player_character=%d\n", playerCharacter);
-    fprintf(f, "settings_version=%d\n", 2);
+    fprintf(f, "settings_version=%d\n", 3);
     fclose(f);
     LOGI("Saved settings to %s", path.c_str());
 }
@@ -437,10 +460,9 @@ void UIOverlay::setSavePath(const std::string& path) {
 }
 
 bool UIOverlay::needsRedraw() {
-    if (mPickerActive) {
-        bool d = mDirty;
+    if (mPickerActive || (!mPlusEdition && mDrawerAnim > 0.001f)) {
         mDirty = false;
-        return d;
+        return true;  // their stars twinkle
     }
     float target = mSettingsOpen ? 1.0f : 0.0f;
     if (fabsf(mDrawerAnim - target) > 0.0005f) {
@@ -493,9 +515,9 @@ int pickerFirstRow(int count) { return count <= 4 ? count : (count + 1) / 2; }
 
 // Button `slot` of `count`, centred.
 void pickerRect(int slot, int count, float w, float h, float ui, float* x0, float* y0, float* x1, float* y1) {
-    float bw = std::min(w * 0.205f, 250.0f * ui);
-    float bh = 74.0f * ui;
-    float gap = 16.0f * ui;
+    float bw = std::min(w * 0.19f, 232.0f * ui);
+    float bh = 58.0f * ui;
+    float gap = 14.0f * ui;
     int first = pickerFirstRow(count);
     int row = slot < first ? 0 : 1;
     int col = slot < first ? slot : slot - first;
@@ -510,15 +532,276 @@ void pickerRect(int slot, int count, float w, float h, float ui, float* x0, floa
 
 // The strap reminder's switch row, under the language buttons.
 void pickerSwitchRect(int count, float w, float h, float ui, float* x0, float* y0, float* x1, float* y1) {
-    int rows = count > pickerFirstRow(count) ? 2 : 1;
-    float rowW = std::min(w * 0.62f, 560.0f * ui);
+    float bx0, by0, bx1, by1;
+    pickerRect(count - 1, count, w, h, ui, &bx0, &by0, &bx1, &by1);  // the last button
+    float rowW = std::min(w * 0.38f, 372.0f * ui);
     *x0 = (w - rowW) * 0.5f;
-    *y0 = h * 0.42f + rows * (74.0f + 16.0f) * ui + 10.0f * ui;
+    *y0 = by1 + 30.0f * ui;
     *x1 = *x0 + rowW;
-    *y1 = *y0 + 58.0f * ui;
+    *y1 = *y0 + 46.0f * ui;
+}
+
+// ---------------------------------------------------------------------------
+// Settings menu (standard edition)
+// ---------------------------------------------------------------------------
+enum { MENU_SECTION, MENU_SWITCH, MENU_SEGMENT, MENU_BUTTONS, MENU_NOTE };
+enum {
+    MI_NONE,
+    MI_SHOW, MI_HIDE_PAD, MI_OPACITY, MI_SIZE, MI_STICK, MI_LAYOUT, MI_DPAD, MI_DPAD_SIDE, MI_RSTICK,
+    MI_VIBRATION, MI_STRAP, MI_ASK_LANG, MI_CUTOUT, MI_DATA,
+    MI_COUNT
+};
+const char* const kMenuTabs[2] = {"Controls", "Game"};
+
+// Where the panel's parts are, for drawing and for touches.
+struct MenuGeom {
+    float ui, w, h;
+    float panelX, panelW, padX;
+    float tabsY0, tabsY1, tabW;
+    float contentTop, contentBottom;
+    float closeX, closeY, closeR;
+};
+
+MenuGeom menuGeom(int screenW, int screenH, float anim) {
+    MenuGeom g;
+    g.ui = (float)screenH / 650.0f;
+    g.w = (float)screenW;
+    g.h = (float)screenH;
+    g.panelW = std::min(g.w * 0.52f, 500.0f * g.ui);
+    g.panelX = (anim - 1.0f) * g.panelW;
+    g.padX = 34.0f * g.ui;
+    g.tabsY0 = 78.0f * g.ui;
+    g.tabsY1 = 112.0f * g.ui;
+    g.tabW = 118.0f * g.ui;
+    g.contentTop = 128.0f * g.ui;
+    g.contentBottom = g.h - 8.0f * g.ui;
+    g.closeR = 17.0f * g.ui;
+    g.closeX = g.panelX + g.panelW - g.padX - g.closeR + 8.0f * g.ui;
+    g.closeY = 46.0f * g.ui;
+    return g;
+}
+
+// A row's control: the segmented choice's track, or the buttons' strip.
+void menuControlRect(const MenuGeom& g, float rowY, int kind, float* x0, float* y0, float* x1, float* y1) {
+    *x0 = g.panelX + g.padX;
+    *x1 = g.panelX + g.panelW - g.padX;
+    if (kind == MENU_SEGMENT) {
+        *y0 = rowY + 34.0f * g.ui;
+        *y1 = rowY + 68.0f * g.ui;
+    } else {
+        *y0 = rowY + 8.0f * g.ui;
+        *y1 = rowY + 50.0f * g.ui;
+    }
 }
 
 }  // namespace
+
+void UIOverlay::menuRows(std::vector<MenuRow>& rows, float ui) const {
+    rows.clear();
+    float y = 0.0f;
+    auto add = [&](int kind, int id, const char* label, const char* o0 = nullptr, const char* o1 = nullptr, const char* o2 = nullptr,
+                   const char* o3 = nullptr) {
+        MenuRow r{};
+        r.kind = kind;
+        r.id = id;
+        r.label = label;
+        const char* opts[4] = {o0, o1, o2, o3};
+        for (const char* o : opts) {
+            if (o) r.options[r.optionCount++] = o;
+        }
+        float units = kind == MENU_SECTION ? (rows.empty() ? 30.0f : 50.0f)
+                      : kind == MENU_SWITCH ? 46.0f
+                      : kind == MENU_SEGMENT ? 78.0f
+                      : kind == MENU_BUTTONS ? 58.0f
+                      : 44.0f;
+        r.h = units * ui;
+        r.y = y;
+        y += r.h;
+        rows.push_back(r);
+    };
+    if (mMenuTab == 0) {
+        add(MENU_SECTION, MI_NONE, "TOUCH CONTROLS");
+        add(MENU_SWITCH, MI_SHOW, "Show on screen");
+        add(MENU_SWITCH, MI_HIDE_PAD, "Hide while a controller is connected");
+        add(MENU_SEGMENT, MI_OPACITY, "Opacity", "25%", "50%", "75%", "100%");
+        add(MENU_SEGMENT, MI_SIZE, "Size", "Small", "Medium", "Large");
+        add(MENU_SEGMENT, MI_STICK, "Stick", "Follows the thumb", "Fixed");
+        add(MENU_BUTTONS, MI_LAYOUT, "", "Move controls", "Reset positions");
+        add(MENU_SECTION, MI_NONE, "CAMERA PAD");
+        add(MENU_SWITCH, MI_DPAD, "Show on screen");
+        add(MENU_SEGMENT, MI_DPAD_SIDE, "Side", "Left", "Right");
+        add(MENU_SECTION, MI_NONE, "CONTROLLER");
+        add(MENU_SEGMENT, MI_RSTICK, "Right stick", "Star Pointer", "Camera");
+    } else {
+        add(MENU_SECTION, MI_NONE, "GAME");
+        add(MENU_SWITCH, MI_VIBRATION, "Vibration");
+        add(MENU_SWITCH, MI_STRAP, "Wii Remote strap reminder at start");
+        add(MENU_SWITCH, MI_ASK_LANG, "Choose the language at next start");
+        add(MENU_SECTION, MI_NONE, "SCREEN");
+        add(MENU_SWITCH, MI_CUTOUT, "Draw around the camera cutout");
+        add(MENU_SECTION, MI_NONE, "GAME DATA");
+        add(MENU_BUTTONS, MI_DATA, "", "Installer", "Save debug log");
+        add(MENU_NOTE, MI_NONE, "Galaxy Android 0.8.0");
+    }
+}
+
+// A switch's state (0/1) or a segmented choice's selected option.
+int UIOverlay::menuValue(int id) const {
+    switch (id) {
+    case MI_SHOW: return mSettings.showControls;
+    case MI_HIDE_PAD: return mSettings.hideWithController;
+    case MI_OPACITY: return mSettings.opacity < 0.375f ? 0 : mSettings.opacity < 0.625f ? 1 : mSettings.opacity < 0.875f ? 2 : 3;
+    case MI_SIZE: return mSettings.scale < 0.92f ? 0 : mSettings.scale < 1.12f ? 1 : 2;
+    case MI_STICK: return mSettings.dynamicStick ? 0 : 1;
+    case MI_DPAD: return mSettings.showDpad;
+    case MI_DPAD_SIDE: return mSettings.dpadOnRight ? 1 : 0;
+    case MI_RSTICK: return mSettings.rightStickPointer ? 0 : 1;
+    case MI_VIBRATION: return mSettings.vibration;
+    case MI_STRAP: return mSettings.showStrapScreen;
+    case MI_ASK_LANG: return mSettings.askLanguage;
+    case MI_CUTOUT: return mSettings.showCameraCutout;
+    default: return -1;
+    }
+}
+
+void UIOverlay::menuAct(int id, int option) {
+    static const float kOpacity[4] = {0.25f, 0.50f, 0.75f, 1.00f};
+    static const float kSize[3] = {0.85f, 1.00f, 1.25f};
+    switch (id) {
+    case MI_SHOW: mSettings.showControls = !mSettings.showControls; break;
+    case MI_HIDE_PAD: mSettings.hideWithController = !mSettings.hideWithController; break;
+    case MI_OPACITY: mSettings.opacity = kOpacity[std::max(0, std::min(3, option))]; break;
+    case MI_SIZE: mSettings.scale = kSize[std::max(0, std::min(2, option))]; break;
+    case MI_STICK: mSettings.dynamicStick = option == 0; break;
+    case MI_LAYOUT:
+        if (option == 0) {
+            mSettingsOpen = false;
+            mEditLayoutMode = true;
+        } else {
+            mSettings.stickOffsetX = mSettings.stickOffsetY = 0.0f;
+            mSettings.buttonOffsetX = mSettings.buttonOffsetY = 0.0f;
+            mSettings.dpadOffsetX = mSettings.dpadOffsetY = 0.0f;
+        }
+        break;
+    case MI_DPAD: mSettings.showDpad = !mSettings.showDpad; break;
+    case MI_DPAD_SIDE:
+        if (mSettings.dpadOnRight != (option == 1)) {
+            mSettings.dpadOnRight = option == 1;
+            mSettings.dpadOffsetX = mSettings.dpadOffsetY = 0.0f;
+        }
+        break;
+    case MI_RSTICK: mSettings.rightStickPointer = option == 0; break;
+    case MI_VIBRATION: mSettings.vibration = !mSettings.vibration; break;
+    case MI_STRAP: setShowStrapScreen(!mSettings.showStrapScreen); break;
+    case MI_ASK_LANG: mSettings.askLanguage = !mSettings.askLanguage; break;
+    case MI_CUTOUT:
+        mSettings.showCameraCutout = !mSettings.showCameraCutout;
+        port_set_camera_cutout(mSettings.showCameraCutout ? 1 : 0);
+        break;
+    case MI_DATA:
+        if (option == 0) {
+            port_open_installer();
+        } else {
+            port_share_log();
+        }
+        break;
+    default: break;
+    }
+    mDirty = true;
+}
+
+// One finger at a time: a drag scrolls the rows, a tap acts on what is under
+// it (a row, a tab, the close button; beside the panel it closes the menu).
+bool UIOverlay::menuTouch(const AInputEvent* event, int screenW, int screenH) {
+    int32_t actionWithIndex = AMotionEvent_getAction(event);
+    int32_t action = actionWithIndex & AMOTION_EVENT_ACTION_MASK;
+    size_t idx = (actionWithIndex & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    MenuGeom g = menuGeom(screenW, screenH, mDrawerAnim);
+    std::vector<MenuRow> rows;
+    menuRows(rows, g.ui);
+    float total = rows.empty() ? 0.0f : rows.back().y + rows.back().h + 18.0f * g.ui;
+    float maxScroll = std::max(0.0f, total - (g.contentBottom - g.contentTop));
+
+    // The row at a point, and which of its options (-1: none).
+    auto hitRow = [&](float x, float y, int* option) -> int {
+        *option = 0;
+        if (x < g.panelX || x > g.panelX + g.panelW || y < g.contentTop || y > g.contentBottom) return -1;
+        float cy = y - g.contentTop + mDrawerScrollY;
+        for (size_t i = 0; i < rows.size(); i++) {
+            const MenuRow& r = rows[i];
+            if (cy < r.y || cy >= r.y + r.h) continue;
+            if (r.kind == MENU_SWITCH) return (int)i;
+            if (r.kind == MENU_SEGMENT || r.kind == MENU_BUTTONS) {
+                float x0, y0, x1, y1;
+                menuControlRect(g, r.y, r.kind, &x0, &y0, &x1, &y1);
+                if (cy < y0 - 6.0f * g.ui || cy > y1 + 6.0f * g.ui || x < x0 || x > x1 || r.optionCount < 1) return -1;
+                *option = std::max(0, std::min(r.optionCount - 1, (int)((x - x0) / ((x1 - x0) / (float)r.optionCount))));
+                return (int)i;
+            }
+            return -1;
+        }
+        return -1;
+    };
+
+    if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN) {
+        if (mDrawerScrollPointerId >= 0) return true;
+        mDrawerScrollPointerId = AMotionEvent_getPointerId(event, idx);
+        mDrawerTouchStartX = AMotionEvent_getX(event, idx);
+        mDrawerTouchStartY = AMotionEvent_getY(event, idx);
+        mDrawerScrollStartOffset = mDrawerScrollTarget;
+        mDrawerIsScrolling = false;
+        mMenuPressRow = hitRow(mDrawerTouchStartX, mDrawerTouchStartY, &mMenuPressOption);
+        mDirty = true;
+        return true;
+    }
+    if (action == AMOTION_EVENT_ACTION_MOVE) {
+        size_t count = AMotionEvent_getPointerCount(event);
+        for (size_t i = 0; i < count; i++) {
+            if (AMotionEvent_getPointerId(event, i) != mDrawerScrollPointerId) continue;
+            float dy = AMotionEvent_getY(event, i) - mDrawerTouchStartY;
+            float dx = AMotionEvent_getX(event, i) - mDrawerTouchStartX;
+            if (mDrawerIsScrolling || fabsf(dy) > 9.0f * g.ui || fabsf(dx) > 22.0f * g.ui) {
+                mDrawerIsScrolling = true;  // no longer a tap
+                mMenuPressRow = -1;
+                mDrawerScrollTarget = std::max(0.0f, std::min(mDrawerScrollStartOffset - dy, maxScroll));
+                mDirty = true;
+            }
+        }
+        return true;
+    }
+    if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_POINTER_UP || action == AMOTION_EVENT_ACTION_CANCEL) {
+        if (AMotionEvent_getPointerId(event, idx) != mDrawerScrollPointerId && action != AMOTION_EVENT_ACTION_CANCEL) return true;
+        bool tap = !mDrawerIsScrolling && action != AMOTION_EVENT_ACTION_CANCEL && mDrawerScrollPointerId >= 0;
+        mDrawerScrollPointerId = -1;
+        mDrawerIsScrolling = false;
+        mMenuPressRow = -1;
+        mDirty = true;
+        if (!tap) return true;
+        float px = AMotionEvent_getX(event, idx), py = AMotionEvent_getY(event, idx);
+        float cdx = px - g.closeX, cdy = py - g.closeY;
+        if (px > g.panelX + g.panelW || cdx * cdx + cdy * cdy <= g.closeR * g.closeR * 2.6f) {
+            closeSettings();
+            return true;
+        }
+        if (py >= g.tabsY0 - 8.0f * g.ui && py <= g.tabsY1 + 8.0f * g.ui) {
+            int tab = (int)((px - (g.panelX + g.padX - 10.0f * g.ui)) / g.tabW);
+            if (tab >= 0 && tab < 2 && tab != mMenuTab) {
+                mMenuTab = tab;
+                mDrawerScrollY = mDrawerScrollTarget = 0.0f;
+                mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+            }
+            return true;
+        }
+        int option = 0;
+        int row = hitRow(px, py, &option);
+        if (row >= 0) {
+            menuAct(rows[row].id, option);
+            mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
+        }
+        return true;
+    }
+    return true;
+}
 
 int UIOverlay::languageSlot(int language) const {
     for (int i = 0; i < mLangCount; i++) {
@@ -646,7 +929,7 @@ bool UIOverlay::pickerTouch(const AInputEvent* event, int screenW, int screenH) 
     {
         float x0, y0, x1, y1;
         pickerSwitchRect(mLangCount, (float)screenW, (float)screenH, ui, &x0, &y0, &x1, &y1);
-        if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+        if (px >= x0 - 18.0f * ui && px <= x1 + 18.0f * ui && py >= y0 - 6.0f * ui && py <= y1 + 6.0f * ui) {
             if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_POINTER_UP) {
                 mobile_haptics::trigger(mobile_haptics::HapticType::Tick);
                 setShowStrapScreen(!mSettings.showStrapScreen);
@@ -674,6 +957,13 @@ void UIOverlay::closeSettings() {
     mDirty = true;
     if (!mSavePath.empty()) {
         mSettings.save(mSavePath);
+    }
+}
+
+void UIOverlay::setGamepadConnected(bool connected) {
+    if (connected != mGamepadConnected) {
+        mGamepadConnected = connected;
+        mDirty = true;
     }
 }
 
@@ -908,6 +1198,11 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
             return true;
         }
         return true;
+    }
+
+    // The standard edition's menu
+    if (!mPlusEdition && (mSettingsOpen || mDrawerAnim > 0.05f)) {
+        return menuTouch(event, screenW, screenH);
     }
 
     // Handle Material 3 Side Sheet Drawer Touches (Tabbed & Scrollable)
@@ -1598,7 +1893,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
 
     // 1. Virtual Stick Acquisition:
     // Only captures fresh touches in the designated bottom-left thumb zone!
-    if (mSettings.showControls && (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN)) {
+    if (controlsVisible() && (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN)) {
         float px = AMotionEvent_getX(event, pointerIndex);
         float py = AMotionEvent_getY(event, pointerIndex);
         int32_t pid = AMotionEvent_getPointerId(event, pointerIndex);
@@ -1674,7 +1969,7 @@ bool UIOverlay::handleInput(const AInputEvent* event, PortPadState& pad,
             };
 
             bool hitButton = false;
-            if (mSettings.showControls) {
+            if (controlsVisible()) {
                 if (inRadius(px, py, aX, aY, aR)) {
                     touchButtons |= 0x0800; // WPAD_BUTTON_A
                     mBtnAPressed = true;
@@ -1874,6 +2169,52 @@ void UIOverlay::render(int screenW, int screenH) {
         drawRoundRect(x0 + 1.2f * uiScale, y0 + 1.2f * uiScale, x1 - 1.2f * uiScale, y1 - 1.2f * uiScale, std::max(0.0f, radius - 1.2f * uiScale), bg);
     };
 
+    // A rectangle shaded from one colour at its top to another at its bottom.
+    auto drawShade = [&](float x0, float y0, float x1, float y1, const Color& top, const Color& bottom) {
+        verts.push_back({x0, y0, 0.0f, 0.0f, top.r, top.g, top.b, top.a, 0.0f, 0.0f, 1.0f, 0.0f});
+        verts.push_back({x1, y0, 0.0f, 0.0f, top.r, top.g, top.b, top.a, 0.0f, 0.0f, 1.0f, 0.0f});
+        verts.push_back({x1, y1, 0.0f, 0.0f, bottom.r, bottom.g, bottom.b, bottom.a, 0.0f, 0.0f, 1.0f, 0.0f});
+        verts.push_back({x0, y0, 0.0f, 0.0f, top.r, top.g, top.b, top.a, 0.0f, 0.0f, 1.0f, 0.0f});
+        verts.push_back({x1, y1, 0.0f, 0.0f, bottom.r, bottom.g, bottom.b, bottom.a, 0.0f, 0.0f, 1.0f, 0.0f});
+        verts.push_back({x0, y1, 0.0f, 0.0f, bottom.r, bottom.g, bottom.b, bottom.a, 0.0f, 0.0f, 1.0f, 0.0f});
+    };
+
+    // A four-pointed star.
+    auto drawSparkle = [&](float cx, float cy, float r, const Color& c) {
+        addQuad(cx - r, cy - r, cx + r, cy + r, -1.0f, -1.0f, 1.0f, 1.0f, c, 9.0f, 0.0f);
+    };
+
+    // The menus' backdrop: a night sky over the rectangle, deep blue down to
+    // violet, two hazes of nebula and stars that twinkle slowly.  The same
+    // stars every frame (a fixed sequence), only their brightness moves.
+    float skyTime = (float)((double)(now % 600000000000ll) / 1e9);
+    auto drawSky = [&](float x0, float y0, float x1, float y1, float a, int stars) {
+        float rw = x1 - x0, rh = y1 - y0;
+        if (rw <= 0.0f || rh <= 0.0f) return;
+        drawShade(x0, y0, x1, y1, rgba(0.020f, 0.027f, 0.090f, a), rgba(0.098f, 0.055f, 0.215f, a));
+        addQuad(x0, y0 + rh * 0.38f, x1, y1 + rh * 0.30f, -1.0f, -1.0f, 1.0f, 0.36f, rgba(0.47f, 0.24f, 0.85f, 0.34f * a), 8.0f, 0.0f);
+        addQuad(x0 - rw * 0.25f, y0 - rh * 0.25f, x0 + rw * 0.85f, y0 + rh * 0.50f, -0.55f, -0.33f, 1.0f, 1.0f, rgba(0.16f, 0.42f, 0.95f, 0.26f * a), 8.0f,
+                0.0f);
+        uint32_t s = 0x2545F491u;
+        auto rnd = [&]() {
+            s = s * 1664525u + 1013904223u;
+            return (float)((s >> 8) & 0xFFFF) / 65535.0f;
+        };
+        for (int i = 0; i < stars; i++) {
+            float fx = rnd(), fy = rnd(), size = rnd(), phase = rnd(), speed = rnd(), tint = rnd();
+            float tw = 0.62f + 0.38f * sinf(skyTime * (0.5f + 1.6f * speed) + phase * 6.2832f);
+            float r = (0.75f + 1.55f * size * size) * uiScale;
+            Color c = tint < 0.70f ? rgba(0.86f, 0.90f, 1.0f, 1.0f) : tint < 0.88f ? rgba(1.0f, 0.93f, 0.76f, 1.0f) : rgba(0.72f, 0.82f, 1.0f, 1.0f);
+            c.a = a * tw * (0.35f + 0.60f * size);
+            drawCircle(x0 + fx * rw, y0 + fy * rh, r, c);
+        }
+        for (int i = 0; i < stars / 16; i++) {
+            float fx = 0.04f + 0.92f * rnd(), fy = 0.04f + 0.92f * rnd(), size = rnd(), phase = rnd();
+            float tw = 0.55f + 0.45f * sinf(skyTime * 0.9f + phase * 6.2832f);
+            drawSparkle(x0 + fx * rw, y0 + fy * rh, (5.0f + 6.0f * size) * uiScale, rgba(1.0f, 0.95f, 0.82f, a * tw * 0.85f));
+        }
+    };
+
     auto drawCogwheel = [&](float cx, float cy, float r, const Color& c, float rot = 0.0f) {
         addQuad(cx - r, cy - r, cx + r, cy + r, -1.0f, -1.0f, 1.0f, 1.0f, c, 3.0f, rot);
     };
@@ -2031,7 +2372,7 @@ void UIOverlay::render(int screenW, int screenH) {
     // -------------------------------------------------------------
     // Draw On-Screen Controls (HUD) - Modern Minimalist Frosted Theme
     // -------------------------------------------------------------
-    if (mSettings.showControls && mDrawerAnim < 0.98f) {
+    if (controlsVisible() && mDrawerAnim < 0.98f) {
         float hudOp = op * (1.0f - mDrawerAnim * 0.75f);
         float cutoutInset = mSettings.showCameraCutout ? 0.0f : (42.0f * uiScale);
 
@@ -2265,9 +2606,138 @@ void UIOverlay::render(int screenW, int screenH) {
     }
 
     // -------------------------------------------------------------
+    // Settings menu (standard edition): rows over a night sky
+    // -------------------------------------------------------------
+    if (!mPlusEdition && mDrawerAnim > 0.001f) {
+        MenuGeom g = menuGeom(screenW, screenH, mDrawerAnim);
+        float ui = g.ui;
+        std::vector<MenuRow> rows;
+        menuRows(rows, ui);
+        float total = rows.empty() ? 0.0f : rows.back().y + rows.back().h + 18.0f * ui;
+        float maxScroll = std::max(0.0f, total - (g.contentBottom - g.contentTop));
+        mDrawerScrollTarget = std::max(0.0f, std::min(mDrawerScrollTarget, maxScroll));
+        if (fabsf(mDrawerScrollY - mDrawerScrollTarget) > 0.5f) {
+            mDrawerScrollY += (mDrawerScrollTarget - mDrawerScrollY) * (1.0f - expf(-18.0f * dt));
+        } else {
+            mDrawerScrollY = mDrawerScrollTarget;
+        }
+
+        float x0 = g.panelX, x1 = g.panelX + g.panelW;
+        float left = x0 + g.padX, right = x1 - g.padX;
+        Color cText = rgba(0.95f, 0.96f, 1.0f, 1.0f);
+        Color cSoft = rgba(0.66f, 0.70f, 0.90f, 1.0f);
+        Color cGold = rgba(1.0f, 0.84f, 0.45f, 1.0f);
+        auto faded = [](Color c, float a) {
+            c.a *= a;
+            return c;
+        };
+        auto textWidth = [&](const char* text, float sizeScale) {
+            float tw = 0.0f;
+            for (const char* p = text; *p; p++) {
+                if (*p >= 32 && *p < 127) tw += (face.glyphs[*p - 32].advance * 0.25f) * sizeScale;
+            }
+            return tw;
+        };
+
+        // The game dims beside the panel; the panel is the sky.
+        drawRoundRect(0.0f, 0.0f, w, h, 0.0f, rgba(0.02f, 0.02f, 0.08f, mDrawerAnim * 0.42f));
+        drawSky(x0, 0.0f, x1, h, 1.0f, 90);
+        drawShade(x1 - 1.5f * ui, 0.0f, x1, h, rgba(0.72f, 0.78f, 1.0f, 0.30f), rgba(0.72f, 0.60f, 1.0f, 0.12f));
+
+        // Rows; they fade out as they pass under the header or the bottom.
+        for (size_t i = 0; i < rows.size(); i++) {
+            const MenuRow& r = rows[i];
+            float y = g.contentTop + r.y - mDrawerScrollY;
+            if (y + r.h < g.contentTop || y > g.contentBottom) continue;
+            float aTop = (y + r.h * 0.45f - g.contentTop) / (r.h * 0.45f);
+            float aBot = (g.contentBottom - (y + r.h * 0.55f)) / (r.h * 0.45f);
+            float a = std::max(0.0f, std::min(1.0f, std::min(aTop, aBot)));
+            bool pressed = (int)i == mMenuPressRow;
+            if (r.kind == MENU_SECTION) {
+                float base = y + r.h - 12.0f * ui;
+                drawSparkle(left + 6.0f * ui, base - 5.0f * ui, 7.0f * ui, faded(cGold, a));
+                drawText(r.label, left + 19.0f * ui, base, 0.27f * ui, faded(cGold, a), 0);
+            } else if (r.kind == MENU_SWITCH) {
+                if (pressed) {
+                    drawRoundRect(left - 12.0f * ui, y + 3.0f * ui, right + 12.0f * ui, y + r.h - 3.0f * ui, 12.0f * ui, rgba(1.0f, 1.0f, 1.0f, 0.07f * a));
+                }
+                drawText(r.label, left, y + r.h * 0.5f + 6.0f * ui, 0.35f * ui, faded(cText, a), 0);
+                float& anim = mMenuAnim[r.id];
+                float tgt = menuValue(r.id) ? 1.0f : 0.0f;
+                if (fabsf(anim - tgt) > 0.002f) {
+                    anim += (tgt - anim) * (1.0f - expf(-22.0f * dt));
+                } else {
+                    anim = tgt;
+                }
+                float sw = 46.0f * ui, sh = 26.0f * ui;
+                float sx = right - sw, sy = y + (r.h - sh) * 0.5f;
+                Color off = rgba(1.0f, 1.0f, 1.0f, 0.16f), on = rgba(1.0f, 0.80f, 0.36f, 1.0f);
+                Color track = rgba(off.r + (on.r - off.r) * anim, off.g + (on.g - off.g) * anim, off.b + (on.b - off.b) * anim, (off.a + (on.a - off.a) * anim) * a);
+                drawRoundRect(sx, sy, sx + sw, sy + sh, sh * 0.5f, track);
+                float kr = sh * 0.5f - 3.5f * ui;
+                float kx = sx + sh * 0.5f + (sw - sh) * anim;
+                drawCircle(kx, sy + sh * 0.5f, kr, rgba(1.0f, 1.0f, 1.0f, (0.80f + 0.20f * anim) * a));
+            } else if (r.kind == MENU_SEGMENT) {
+                drawText(r.label, left, y + 24.0f * ui, 0.31f * ui, faded(cSoft, a), 0);
+                float cx0, cy0, cx1, cy1;
+                menuControlRect(g, y, r.kind, &cx0, &cy0, &cx1, &cy1);
+                drawRoundRect(cx0, cy0, cx1, cy1, (cy1 - cy0) * 0.5f, rgba(1.0f, 1.0f, 1.0f, 0.075f * a));
+                float segW = (cx1 - cx0) / (float)r.optionCount;
+                int sel = menuValue(r.id);
+                for (int k = 0; k < r.optionCount; k++) {
+                    float sx0 = cx0 + k * segW + 3.0f * ui, sx1 = cx0 + (k + 1) * segW - 3.0f * ui;
+                    if (k == sel) {
+                        drawRoundRect(sx0, cy0 + 3.0f * ui, sx1, cy1 - 3.0f * ui, (cy1 - cy0) * 0.5f - 3.0f * ui, rgba(1.0f, 1.0f, 1.0f, 0.22f * a));
+                    } else if (pressed && k == mMenuPressOption) {
+                        drawRoundRect(sx0, cy0 + 3.0f * ui, sx1, cy1 - 3.0f * ui, (cy1 - cy0) * 0.5f - 3.0f * ui, rgba(1.0f, 1.0f, 1.0f, 0.09f * a));
+                    }
+                    drawText(r.options[k], (sx0 + sx1) * 0.5f, cy0 + 22.5f * ui, 0.30f * ui, faded(k == sel ? cText : cSoft, a), 1);
+                }
+            } else if (r.kind == MENU_BUTTONS) {
+                float cx0, cy0, cx1, cy1;
+                menuControlRect(g, y, r.kind, &cx0, &cy0, &cx1, &cy1);
+                float gap = 12.0f * ui;
+                float bw = (cx1 - cx0 - gap * (r.optionCount - 1)) / (float)r.optionCount;
+                for (int k = 0; k < r.optionCount; k++) {
+                    float bx0 = cx0 + k * (bw + gap), bx1 = bx0 + bw;
+                    bool down = pressed && k == mMenuPressOption;
+                    drawRoundRect(bx0, cy0, bx1, cy1, (cy1 - cy0) * 0.5f, rgba(1.0f, 1.0f, 1.0f, (down ? 0.60f : 0.34f) * a));
+                    drawRoundRect(bx0 + 1.3f * ui, cy0 + 1.3f * ui, bx1 - 1.3f * ui, cy1 - 1.3f * ui, (cy1 - cy0) * 0.5f - 1.3f * ui,
+                                  down ? rgba(0.20f, 0.17f, 0.42f, a) : rgba(0.085f, 0.065f, 0.215f, a));
+                    drawText(r.options[k], (bx0 + bx1) * 0.5f, cy0 + 26.5f * ui, 0.31f * ui, faded(cText, a), 1);
+                }
+            } else {
+                drawText(r.label, left, y + r.h - 12.0f * ui, 0.25f * ui, faded(cSoft, 0.55f * a), 0);
+            }
+        }
+
+        // Header: title, close, tabs
+        drawSparkle(left + 10.0f * ui, 43.0f * ui, 13.0f * ui, cGold);
+        drawText("Settings", left + 30.0f * ui, 53.0f * ui, 0.56f * ui, cText, 0);
+        drawCircle(g.closeX, g.closeY, g.closeR, rgba(1.0f, 1.0f, 1.0f, 0.10f));
+        drawCloseIcon(g.closeX, g.closeY, 9.0f * ui, rgba(0.90f, 0.92f, 1.0f, 0.95f));
+        for (int t = 0; t < 2; t++) {
+            float tx = left + t * g.tabW;
+            bool cur = t == mMenuTab;
+            drawText(kMenuTabs[t], tx, g.tabsY0 + 22.0f * ui, 0.37f * ui, cur ? cText : faded(cSoft, 0.85f), 0);
+            if (cur) {
+                drawRoundRect(tx, g.tabsY1 - 4.0f * ui, tx + textWidth(kMenuTabs[t], 0.37f * ui), g.tabsY1 - 1.0f * ui, 1.5f * ui, cGold);
+            }
+        }
+        drawRoundRect(left, g.tabsY1 + 1.0f * ui, right, g.tabsY1 + 2.0f * ui, 0.0f, rgba(1.0f, 1.0f, 1.0f, 0.10f));
+
+        if (maxScroll > 1.0f) {
+            float trackH = g.contentBottom - g.contentTop;
+            float thumbH = std::max(26.0f * ui, trackH * trackH / total);
+            float thumbY = g.contentTop + (mDrawerScrollY / maxScroll) * (trackH - thumbH);
+            drawRoundRect(x1 - 7.0f * ui, thumbY, x1 - 4.5f * ui, thumbY + thumbH, 1.25f * ui, rgba(1.0f, 1.0f, 1.0f, 0.26f));
+        }
+    }
+
+    // -------------------------------------------------------------
     // Material 3 Side Sheet Navigation Drawer (Tabbed & Scrollable)
     // -------------------------------------------------------------
-    if (mDrawerAnim > 0.001f) {
+    if (mPlusEdition && mDrawerAnim > 0.001f) {
         // Scrim backdrop (smoothly fades with animation)
         drawRoundRect(0, 0, w, h, 0.0f, rgba(0.0f, 0.0f, 0.0f, mDrawerAnim * 0.58f));
 
@@ -3162,42 +3632,41 @@ void UIOverlay::render(int screenW, int screenH) {
     }
 
     // -------------------------------------------------------------
-    // Start-up language picker (covers everything else)
+    // Start-up language screen (covers everything else)
     // -------------------------------------------------------------
     if (mPickerActive) {
         verts.clear();
-        drawRoundRect(0.0f, 0.0f, w, h, 0.0f, rgba(0.035f, 0.045f, 0.090f, 1.0f));
-        drawText("GALAXY ANDROID", w * 0.5f, h * 0.17f, 0.95f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
-        drawText("by RonyxDumb", w * 0.5f, h * 0.17f + 34.0f * uiScale, 0.34f * uiScale, rgba(0.62f, 0.68f, 0.80f, 1.0f), 1);
-        drawText("Choose your language", w * 0.5f, h * 0.36f, 0.50f * uiScale, rgba(0.80f, 0.88f, 1.0f, 1.0f), 1);
+        drawSky(0.0f, 0.0f, w, h, 1.0f, 190);
+        Color cText = rgba(0.95f, 0.96f, 1.0f, 1.0f);
+        Color cSoft = rgba(0.66f, 0.70f, 0.90f, 1.0f);
+        drawText("Galaxy Android", w * 0.5f, h * 0.215f, 0.92f * uiScale, cText, 1);
+        drawText("Choose your language", w * 0.5f, h * 0.215f + 46.0f * uiScale, 0.38f * uiScale, cSoft, 1);
         for (int i = 0; i < mLangCount; i++) {
             float x0, y0, x1, y1;
             pickerRect(i, mLangCount, w, h, uiScale, &x0, &y0, &x1, &y1);
             bool sel = i == mPickerSel;
-            int lang = mLangList[i];
-            drawRoundRect(x0, y0, x1, y1, 22.0f * uiScale, sel ? rgba(0.043f, 0.341f, 0.816f, 1.0f) : rgba(0.141f, 0.153f, 0.200f, 1.0f));
-            if (!sel) drawRoundRect(x0, y0, x1, y1, 22.0f * uiScale, rgba(0.30f, 0.33f, 0.40f, 0.35f));
-            drawText(kPickerLangNames[lang], (x0 + x1) * 0.5f, y0 + 36.0f * uiScale, 0.46f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 1);
-            drawText(kPickerLangCodes[lang], (x0 + x1) * 0.5f, y0 + 60.0f * uiScale, 0.28f * uiScale,
-                     sel ? rgba(0.85f, 0.92f, 1.0f, 1.0f) : rgba(0.55f, 0.60f, 0.70f, 1.0f), 1);
+            float rad = (y1 - y0) * 0.5f;
+            drawRoundRect(x0, y0, x1, y1, rad, rgba(1.0f, 1.0f, 1.0f, sel ? 0.90f : 0.24f));
+            drawRoundRect(x0 + 1.4f * uiScale, y0 + 1.4f * uiScale, x1 - 1.4f * uiScale, y1 - 1.4f * uiScale, rad - 1.4f * uiScale,
+                          sel ? rgba(0.235f, 0.200f, 0.490f, 1.0f) : rgba(0.075f, 0.062f, 0.200f, 1.0f));
+            drawText(kPickerLangNames[mLangList[i]], (x0 + x1) * 0.5f, (y0 + y1) * 0.5f + 8.0f * uiScale, 0.44f * uiScale, sel ? cText : cSoft, 1);
         }
         {
             // The game's strap reminder at its start, on or off.
             float x0, y0, x1, y1;
             pickerSwitchRect(mLangCount, w, h, uiScale, &x0, &y0, &x1, &y1);
-            bool focus = mPickerSel >= mLangCount;
-            if (focus) drawRoundRect(x0 - 2.0f * uiScale, y0 - 2.0f * uiScale, x1 + 2.0f * uiScale, y1 + 2.0f * uiScale, 20.0f * uiScale, rgba(0.043f, 0.341f, 0.816f, 1.0f));
-            drawRoundRect(x0, y0, x1, y1, 18.0f * uiScale, rgba(0.141f, 0.153f, 0.200f, 1.0f));
-            drawText("Wii Remote strap screen", x0 + 18.0f * uiScale, y0 + 25.0f * uiScale, 0.38f * uiScale, rgba(1.0f, 1.0f, 1.0f, 1.0f), 0);
-            drawText("Show the safety reminder when the game starts", x0 + 18.0f * uiScale, y0 + 44.0f * uiScale, 0.27f * uiScale,
-                     rgba(0.62f, 0.68f, 0.80f, 1.0f), 0);
-            float pSwW = 50.0f * uiScale, pSwH = 28.0f * uiScale;
-            drawM3Switch(x1 - pSwW - 16.0f * uiScale, (y0 + y1) * 0.5f - pSwH * 0.5f, pSwW, pSwH, mSwAnimStrapScreen);
+            if (mPickerSel >= mLangCount) {  // a gamepad's selection is on it
+                drawRoundRect(x0 - 16.0f * uiScale, y0, x1 + 16.0f * uiScale, y1, (y1 - y0) * 0.5f, rgba(1.0f, 1.0f, 1.0f, 0.10f));
+            }
+            drawText("Wii Remote strap reminder at start", x0, (y0 + y1) * 0.5f + 6.0f * uiScale, 0.34f * uiScale, cSoft, 0);
+            float sw = 46.0f * uiScale, sh = 26.0f * uiScale;
+            float sx = x1 - sw, sy = (y0 + y1) * 0.5f - sh * 0.5f;
+            float t = mSwAnimStrapScreen;
+            drawRoundRect(sx, sy, sx + sw, sy + sh, sh * 0.5f,
+                          rgba(1.0f, 1.0f - 0.20f * t, 1.0f - 0.64f * t, 0.16f + 0.84f * t));
+            drawCircle(sx + sh * 0.5f + (sw - sh) * t, sy + sh * 0.5f, sh * 0.5f - 3.5f * uiScale, rgba(1.0f, 1.0f, 1.0f, 0.80f + 0.20f * t));
         }
-        drawText("Tap a language to start  -  or D-pad and A on a controller", w * 0.5f, h - 52.0f * uiScale, 0.28f * uiScale,
-                 rgba(0.50f, 0.55f, 0.65f, 1.0f), 1);
-        drawText("Asked this once: Settings > System brings this screen back", w * 0.5f, h - 30.0f * uiScale, 0.26f * uiScale,
-                 rgba(0.42f, 0.47f, 0.57f, 1.0f), 1);
+        drawText("by RonyxDumb", w * 0.5f, h - 26.0f * uiScale, 0.25f * uiScale, rgba(0.66f, 0.70f, 0.90f, 0.55f), 1);
     }
 
     if (verts.empty()) return;
