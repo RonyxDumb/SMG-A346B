@@ -863,6 +863,15 @@ struct Recorder final : Backend {
         }
         u32 fmt = ((ctrl >> 4) & 7) | (((ctrl >> 3) & 1) << 3);
         EfbCopyInfo info{id, w, h, fmt, frameNumber, 0};
+        // The pixels stay on the GPU; the destination gets a mark of this
+        // copy instead (the smallest texture is one 32 byte tile), so the
+        // address means the copy for as long as the game leaves it alone,
+        // however long ago it was made (a screen captured once and shown
+        // under a wipe), and never again once a texture is loaded there.
+        u32 mark[8] = {0x45464243u, 0x4F505921u, id, (u32)frameNumber, ~id, addr, w, h};
+        if (u8* dst = memPtrWritable(addr)) {
+            memcpy(dst, mark, sizeof(mark));
+        }
         info.memHash = hashBytes(memPtr(addr), 64);
         efbCopies[addr] = info;
         texDirty = true;
@@ -1087,12 +1096,16 @@ struct Recorder final : Backend {
         frame = frameQueue().publish(std::move(frame));
         resetBindings();
         snapshot();
-        // Drop EFB copy associations that were not refreshed recently.
-        for (auto it = efbCopies.begin(); it != efbCopies.end();) {
-            if (frameNumber - it->second.frame > 8) {
-                it = efbCopies.erase(it);
-            } else {
-                ++it;
+        // Drop EFB copy associations whose memory the game has reused (the
+        // copy's mark is gone); the others stay, a capture can be shown for
+        // seconds after it was made.
+        if (frameNumber % 64 == 0) {
+            for (auto it = efbCopies.begin(); it != efbCopies.end();) {
+                if (hashBytes(memPtr(it->first), 64) != it->second.memHash) {
+                    it = efbCopies.erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
         // Keep the texture cache bounded.

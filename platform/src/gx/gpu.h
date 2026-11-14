@@ -111,5 +111,7 @@ extern u64 gStreamSerial;
 // Host pointer for an address written into GPU registers (physical, cached
 // or uncached virtual).
 const u8* memPtr(u32 addr);
+// The same for writing; null when the address is not game memory.
+u8* memPtrWritable(u32 addr);
 
 }  // namespace gpu

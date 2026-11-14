@@ -200,7 +200,7 @@ u64 hashWords(const u32* w, size_t n) {
 struct CopyTex {
     GLuint tex = 0, fbo = 0;
     int w = 0, h = 0;
-    u64 frame = 0;  // frame whose replay last wrote it
+    u64 frame = 0;  // frame whose replay last wrote or read it
 };
 
 // EFB copies land in textures keyed like texture memory: by destination
@@ -1073,9 +1073,9 @@ CopyTex& Renderer::Impl::copyTex(u64 key, int w, int h) {
     return c;
 }
 
-// Copy targets of addresses (or views) no longer copied to: the recorder
-// forgets a copy after 8 frames, and a scene's buffers are copied to every
-// frame.
+// Copy targets of addresses (or views) neither copied to nor drawn with any
+// more: a scene's buffers are copied to every frame, and a capture made once
+// (the screen under a system wipe) is drawn every frame while it shows.
 void Renderer::Impl::evictCopies() {
     const u64 kKeepFrames = 120;
     for (auto it = copies.begin(); it != copies.end();) {
@@ -2581,6 +2581,9 @@ void Renderer::Impl::execute(EfbTarget& efb, const EyeView* eye, EfbTarget* hud,
             }
             if (tr & 0x80000000u) {
                 auto cit = copies.find(copyKey(copySlot, (tr & 0x7FFFFFFF) << 5));
+                if (cit != copies.end()) {
+                    cit->second.frame = cur->number;  // in use: not evicted
+                }
                 bindTexture(u, cit != copies.end() ? cit->second.tex : 0, sampler(it.texMode0[u], it.texMode1[u], 1));
             } else if (tr < textures.size()) {
                 bindTexture(u, textures[tr]->glTex, sampler(it.texMode0[u], it.texMode1[u], textures[tr]->levels));

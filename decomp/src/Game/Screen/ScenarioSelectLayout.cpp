@@ -211,6 +211,13 @@ void ScenarioSelectLayout::appear() {
 
     mScenarioSky->mTranslation.set(::cSkyTrans);
     mScenarioSky->mScale.set(::cSkyScale);
+#ifdef TARGET_PC
+    // The sky is a backdrop sized for the game's 16:9 view: on a wider
+    // screen it grows with the view, so no black shows beside it.
+    if (MR::getScreenWidth() > 832) {
+        mScenarioSky->mScale.set(::cSkyScale * MR::getScreenWidth() / 832.0f);
+    }
+#endif
     mScenarioSky->appear();
     MultiScene::startBtk(mScenarioSky, "ScenarioSelectSky");
     MR::hidePaneRecursive(this, "CometAppear");

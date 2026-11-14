@@ -54,6 +54,9 @@ void WipeRing::draw() const {
     f32 radius = isWipeOut() ? 1.0f - t : t;
     f32 fullyOpen = calcRadius() / calcMaxRadius();
     f32 closed = 1.0f - MR::clamp(fullyOpen > 0.0f ? radius / fullyOpen : 1.0f, 0.0f, 1.0f);
+    if (isClose()) {
+        closed = 1.0f;  // whichever animation it stopped on
+    }
     port_vr_wipe(mIsCenterOnPlayer ? 1 : 2, closed, 0x000000);
     if (port_vr_diorama()) {
         return;

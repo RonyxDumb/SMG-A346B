@@ -32,6 +32,11 @@ const u8* memPtr(u32 addr) {
     return sZeroBuffer;
 }
 
+u8* memPtrWritable(u32 addr) {
+    const u8* p = memPtr(addr);
+    return p == sZeroBuffer ? nullptr : const_cast< u8* >(p);
+}
+
 // ---------------------------------------------------------------------------
 // Vertex size
 // ---------------------------------------------------------------------------
